@@ -131,6 +131,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	nodeCfg := p2p.DefaultNodeConfig()
 	nodeCfg.ListenAddrs = cfg.ListenAddrs
 	nodeCfg.SeedNodes = cfg.SeedNodes
+	nodeCfg.UserAgent = "blocknet/" + Version
 
 	// Seed nodes get persistent identity and don't connect to other seeds
 	if cfg.SeedMode {

@@ -61,7 +61,7 @@ func DefaultNodeConfig() NodeConfig {
 		MaxInbound:  64,
 		MaxOutbound: 16,
 		Identity:    DefaultIdentityConfig(),
-		UserAgent:   "blocknet/0.1.0",
+		UserAgent:   "blocknet",
 	}
 }
 

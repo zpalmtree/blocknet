@@ -9,6 +9,8 @@ import (
 	"blocknet/wallet"
 )
 
+const Version = "0.2.0"
+
 func main() {
 	// Parse command line flags
 	walletFile := flag.String("wallet", "wallet.dat", "Path to wallet file")
