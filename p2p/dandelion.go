@@ -3,8 +3,10 @@ package p2p
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
-	"math/rand"
+	"encoding/binary"
+	"math/big"
 	"sync"
 	"time"
 
@@ -172,8 +174,8 @@ func (d *DandelionRouter) handleStemTx(from peer.ID, data []byte) {
 		return
 	}
 
-	// Decide: continue stem or fluff?
-	shouldFluff := rand.Float64() > StemProbability
+	// Decide: continue stem or fluff? (crypto/rand for privacy)
+	shouldFluff := cryptoRandFloat64() > StemProbability
 
 	rec := &txRecord{
 		hash:      hash,
@@ -285,7 +287,7 @@ func (d *DandelionRouter) getOutboundStemPeer() peer.ID {
 		return ""
 	}
 
-	d.outboundStem = peers[rand.Intn(len(peers))]
+	d.outboundStem = peers[cryptoRandIntn(len(peers))]
 	return d.outboundStem
 }
 
@@ -305,7 +307,7 @@ func (d *DandelionRouter) getStemPeerExcluding(exclude peer.ID) peer.ID {
 		return ""
 	}
 
-	return candidates[rand.Intn(len(candidates))]
+	return candidates[cryptoRandIntn(len(candidates))]
 }
 
 // rotateEpoch changes stem routing for a new epoch
@@ -325,7 +327,7 @@ func (d *DandelionRouter) rotateEpoch() {
 	for _, p := range peers {
 		// Each peer has 50% chance of being a stem neighbor
 		// This provides anonymity set while limiting routing graph complexity
-		if rand.Float64() < 0.5 {
+		if cryptoRandFloat64() < 0.5 {
 			d.stemNeighbors = append(d.stemNeighbors, p)
 		}
 	}
@@ -470,4 +472,22 @@ func (d *DandelionRouter) TxCacheSize() int {
 // hashesEqual compares two transaction hashes
 func hashesEqual(a, b [32]byte) bool {
 	return bytes.Equal(a[:], b[:])
+}
+
+// cryptoRandIntn returns a cryptographically random int in [0, n).
+func cryptoRandIntn(n int) int {
+	val, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return int(val.Int64())
+}
+
+// cryptoRandFloat64 returns a cryptographically random float64 in [0.0, 1.0).
+func cryptoRandFloat64() float64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return float64(binary.LittleEndian.Uint64(b[:])>>11) / (1 << 53)
 }

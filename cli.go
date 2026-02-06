@@ -29,6 +29,8 @@ type CLI struct {
 	startTime  time.Time
 	daemonMode bool
 	noColor    bool
+	api        *APIServer
+	apiAddr    string
 }
 
 // CLIConfig holds CLI configuration
@@ -43,6 +45,7 @@ type CLIConfig struct {
 	SeedMode     bool   // If true, run as seed node with persistent identity
 	DaemonMode   bool   // If true, run headless (no interactive prompts)
 	ExplorerAddr string // HTTP address for block explorer (empty = disabled)
+	APIAddr      string // API listen address (empty = disabled)
 	NoColor      bool   // If true, disable colored output
 }
 
@@ -213,6 +216,12 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	}
 	cli.daemon = daemon
 
+	// Create API server if --api is set
+	if cfg.APIAddr != "" {
+		cli.api = NewAPIServer(daemon, w, cli.scanner, cfg.DataDir, password)
+		cli.apiAddr = cfg.APIAddr
+	}
+
 	return cli, nil
 }
 
@@ -243,6 +252,13 @@ func (c *CLI) Run() error {
 		if removed > 0 {
 			fmt.Printf("Chain reset detected: removed %d orphaned outputs, rewound wallet to height %d\n", removed, chainHeight)
 			c.wallet.Save()
+		}
+	}
+
+	// Start API server if configured
+	if c.api != nil {
+		if err := c.api.Start(c.apiAddr); err != nil {
+			return fmt.Errorf("failed to start API: %w", err)
 		}
 	}
 
@@ -851,6 +867,11 @@ func (c *CLI) cmdSave() error {
 }
 
 func (c *CLI) shutdown() error {
+	// Stop API server first (removes cookie file)
+	if c.api != nil {
+		c.api.Stop()
+	}
+
 	fmt.Println("Saving wallet...")
 	if err := c.wallet.Save(); err != nil {
 		fmt.Printf("Warning: failed to save wallet: %v\n", err)

@@ -15,7 +15,11 @@ Private digital currency. Stealth addresses, ring signatures, confidential trans
 | signatures | CLSAG |
 | hashing | SHA3-256 |
 
-## build
+## download
+
+Pre-built binaries at [blocknetcrypto.com](https://blocknetcrypto.com). Single binary, no extra files needed.
+
+## build from source
 
 Requires Go 1.22+ and Rust 1.75+.
 
@@ -23,19 +27,14 @@ Requires Go 1.22+ and Rust 1.75+.
 
 ```
 sudo apt install build-essential
-cd crypto-rs && cargo build --release
-sudo cp target/release/libblocknet_crypto.so /usr/local/lib/
-sudo ldconfig
-cd .. && CGO_ENABLED=1 go build -o blocknet .
+make all
 ```
 
 ### macos
 
 ```
 xcode-select --install
-cd crypto-rs && cargo build --release
-sudo cp target/release/libblocknet_crypto.dylib /usr/local/lib/
-cd .. && CGO_ENABLED=1 go build -o blocknet .
+make all
 ```
 
 ### windows (msys2)
@@ -44,11 +43,17 @@ Install MSYS2 from https://www.msys2.org/, then in MINGW64 shell:
 
 ```
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-rust mingw-w64-x86_64-go
-cd crypto-rs && cargo build --release
-cd .. && CGO_ENABLED=1 go build -o blocknet.exe .
+make all
 ```
 
-Place `blocknet_crypto.dll` from `crypto-rs/target/release/` alongside `blocknet.exe`.
+Or without make:
+
+```
+cd crypto-rs && cargo build --release
+cd .. && CGO_ENABLED=1 go build -o blocknet .
+```
+
+The Rust crypto library is statically linked into the binary. No shared libraries needed at runtime.
 
 ## run
 
@@ -56,30 +61,50 @@ Place `blocknet_crypto.dll` from `crypto-rs/target/release/` alongside `blocknet
 ./blocknet
 ```
 
-Commands:
+### commands
 
 ```
-status          node status
-balance         wallet balance
-address         receive address
-send <addr> <n> send coins
-mining start    start mining
-mining stop     stop mining
-seed            show recovery phrase
-peers           list connected peers
-help            list all commands
+status              node and wallet status
+balance             wallet balance
+address             receiving address
+send <addr> <amt>   send funds
+history             transaction history
+mining start        start mining
+mining stop         stop mining
+mining threads <N>  set mining threads (2GB RAM each)
+peers               connected peers
+banned              banned peers
+export-peer         export peer address to peer.txt
+sync                force chain sync
+seed                show recovery phrase
+viewkeys            export view-only wallet keys
+lock                lock wallet
+unlock              unlock wallet
+save                save wallet to disk
+quit                exit
 ```
 
-Flags:
+### flags
 
 ```
---wallet <path>   wallet file (default: wallet.dat)
---data <path>     data directory (default: ./data)
---listen <addr>   p2p listen address (default: /ip4/0.0.0.0/tcp/28080)
---seed            run as seed node (persistent identity)
---daemon          headless mode (no interactive shell)
---recover         recover wallet from mnemonic
---viewonly        create view-only wallet
+--wallet <path>     wallet file (default: wallet.dat)
+--data <path>       data directory (default: ./data)
+--listen <addr>     p2p listen address (default: /ip4/0.0.0.0/tcp/28080)
+--seed              run as seed node (persistent identity)
+--daemon            headless mode (no interactive shell)
+--recover           recover wallet from mnemonic
+--viewonly          create view-only wallet (requires --spend-pub and --view-priv)
+--spend-pub <hex>   spend public key for view-only wallet
+--view-priv <hex>   view private key for view-only wallet
+--explorer <addr>   run block explorer (e.g. --explorer :8080)
+--nocolor           disable colored output
+--test              run crypto and chain tests
+```
+
+Custom peers can be passed as positional args:
+
+```
+./blocknet /ip4/1.2.3.4/tcp/28080/p2p/12D3KooW...
 ```
 
 ## privacy
@@ -95,4 +120,3 @@ Dandelion++ obscures transaction origin on the network layer.
 ## license
 
 BSD 3-Clause. See LICENSE.
-

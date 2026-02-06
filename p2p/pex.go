@@ -2,10 +2,11 @@ package p2p
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
+	"math/big"
 	"sync"
 	"time"
 
@@ -188,10 +189,12 @@ func (pex *PeerExchange) doExchange() {
 		return
 	}
 
-	// Pick random peers to exchange with (max 3)
-	rand.Shuffle(len(peers), func(i, j int) {
+	// Pick random peers to exchange with (max 3, crypto/rand)
+	for i := len(peers) - 1; i > 0; i-- {
+		jBig, _ := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		j := int(jBig.Int64())
 		peers[i], peers[j] = peers[j], peers[i]
-	})
+	}
 
 	count := 3
 	if len(peers) < count {

@@ -19,6 +19,7 @@ func main() {
 	seedNode := flag.Bool("seed", false, "Run as seed node (persistent identity)")
 	daemonMode := flag.Bool("daemon", false, "Run headless (no interactive shell)")
 	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
+	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
 	noColor := flag.Bool("nocolor", false, "Disable colored output")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
@@ -60,6 +61,7 @@ func main() {
 		SeedMode:     *seedNode,
 		DaemonMode:   *daemonMode,
 		ExplorerAddr: *explorerAddr,
+		APIAddr:      *apiAddr,
 		NoColor:      *noColor,
 	}
 

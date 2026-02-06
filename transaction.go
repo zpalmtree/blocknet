@@ -1,10 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"sync"
 
 	"golang.org/x/crypto/sha3"
@@ -204,15 +205,24 @@ func (s *UTXOSet) SelectRingMembers(realPubKey [32]byte) ([][32]byte, int, error
 		return nil, 0, fmt.Errorf("not enough UTXOs for ring (need %d, have %d)", ringSize-1, len(allUTXOs))
 	}
 
-	// Shuffle and pick decoys
-	rand.Shuffle(len(allUTXOs), func(i, j int) {
+	// Shuffle and pick decoys (crypto/rand for anonymity)
+	for i := len(allUTXOs) - 1; i > 0; i-- {
+		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return nil, 0, fmt.Errorf("crypto/rand failed: %w", err)
+		}
+		j := int(jBig.Int64())
 		allUTXOs[i], allUTXOs[j] = allUTXOs[j], allUTXOs[i]
-	})
+	}
 
 	decoys := allUTXOs[:ringSize-1]
 
-	// Create ring with random position for real key
-	secretIndex := rand.Intn(ringSize)
+	// Create ring with random position for real key (crypto/rand)
+	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(ringSize)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("crypto/rand failed: %w", err)
+	}
+	secretIndex := int(idxBig.Int64())
 	ring := make([][32]byte, ringSize)
 
 	decoyIdx := 0
@@ -255,15 +265,24 @@ func (s *UTXOSet) SelectRingMembersWithCommitments(realPubKey, realCommitment [3
 		return nil, fmt.Errorf("not enough UTXOs for ring (need %d, have %d)", ringSize-1, len(allUTXOs))
 	}
 
-	// Shuffle and pick decoys
-	rand.Shuffle(len(allUTXOs), func(i, j int) {
+	// Shuffle and pick decoys (crypto/rand for anonymity)
+	for i := len(allUTXOs) - 1; i > 0; i-- {
+		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return nil, fmt.Errorf("crypto/rand failed: %w", err)
+		}
+		j := int(jBig.Int64())
 		allUTXOs[i], allUTXOs[j] = allUTXOs[j], allUTXOs[i]
-	})
+	}
 
 	decoys := allUTXOs[:ringSize-1]
 
-	// Create ring with random position for real key
-	secretIndex := rand.Intn(ringSize)
+	// Create ring with random position for real key (crypto/rand)
+	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(ringSize)))
+	if err != nil {
+		return nil, fmt.Errorf("crypto/rand failed: %w", err)
+	}
+	secretIndex := int(idxBig.Int64())
 	keys := make([][32]byte, ringSize)
 	commitments := make([][32]byte, ringSize)
 
@@ -491,12 +510,12 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 
 	for i := range b.inputs {
 		if i < len(b.inputs)-1 {
-			// Random blinding for non-last inputs
-			randBlinding := make([]byte, 32)
-			for j := range randBlinding {
-				randBlinding[j] = byte(rand.Intn(256))
+			// Random blinding for non-last inputs (crypto/rand)
+			var randBlinding [32]byte
+			if _, err := rand.Read(randBlinding[:]); err != nil {
+				return nil, fmt.Errorf("crypto/rand failed: %w", err)
 			}
-			copy(pseudoBlindings[i][:], randBlinding)
+			pseudoBlindings[i] = randBlinding
 
 			if i == 0 {
 				pseudoBlindingSum = pseudoBlindings[i]

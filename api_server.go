@@ -1,0 +1,125 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+
+	"blocknet/wallet"
+)
+
+// APIServer serves the authenticated JSON API for GUI wallets.
+type APIServer struct {
+	daemon  *Daemon
+	wallet  *wallet.Wallet
+	scanner *wallet.Scanner
+	dataDir string
+	token   string
+	server  *http.Server
+
+	// Wallet lock state (mirrors CLI behavior)
+	locked   bool
+	password []byte
+	mu       sync.RWMutex
+}
+
+// NewAPIServer creates a new API server. wallet and scanner may be nil
+// for public-only mode (e.g. seed node running --explorer).
+func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dataDir string, password []byte) *APIServer {
+	return &APIServer{
+		daemon:   daemon,
+		wallet:   w,
+		scanner:  scanner,
+		dataDir:  dataDir,
+		password: password,
+	}
+}
+
+// isLocked returns whether the wallet is locked.
+func (s *APIServer) isLocked() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.locked
+}
+
+// requireWallet checks that the wallet exists and is unlocked.
+// Returns true if the request should proceed.
+func (s *APIServer) requireWallet(w http.ResponseWriter, _ *http.Request) bool {
+	if s.wallet == nil {
+		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+		return false
+	}
+	if s.isLocked() {
+		writeError(w, http.StatusForbidden, "wallet is locked")
+		return false
+	}
+	return true
+}
+
+// Start launches the full authenticated API server.
+func (s *APIServer) Start(addr string) error {
+	token, err := generateToken()
+	if err != nil {
+		return fmt.Errorf("failed to generate auth token: %w", err)
+	}
+	s.token = token
+
+	if err := writeCookie(s.dataDir, token); err != nil {
+		deleteCookie(s.dataDir)
+		return fmt.Errorf("failed to write cookie: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	s.registerPublicRoutes(mux)
+	s.registerPrivateRoutes(mux)
+
+	var handler http.Handler = mux
+	handler = authMiddleware(token, handler)
+	handler = maxBodySize(handler, 1<<20) // 1MB
+
+	s.server = &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		deleteCookie(s.dataDir)
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
+	log.Printf("API listening on %s", addr)
+
+	go func() {
+		if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("API server error: %v", err)
+		}
+	}()
+
+	return nil
+}
+
+// Stop gracefully shuts down the API server and removes the cookie file.
+func (s *APIServer) Stop() {
+	if s.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.server.Shutdown(ctx)
+	}
+	deleteCookie(s.dataDir)
+}
+
+// maxBodySize limits request body size to prevent OOM from large payloads.
+func maxBodySize(next http.Handler, bytes int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, bytes)
+		next.ServeHTTP(w, r)
+	})
+}
