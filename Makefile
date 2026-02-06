@@ -22,34 +22,19 @@ build-go: build-rust
 	@echo "Building Go binary..."
 	CGO_ENABLED=1 go build -o blocknet .
 
-# Install shared library to system (run 'make all' first, then 'sudo make install')
-install:
-	@echo "Installing shared library..."
-ifeq ($(OS),darwin)
-	cp crypto-rs/target/release/libblocknet_crypto.dylib /usr/local/lib/
-else
-	cp crypto-rs/target/release/libblocknet_crypto.so /usr/local/lib/
-	ldconfig
-endif
-
 # Build release package for current platform
 release: build-rust
 	@echo "Building release for $(OS)-$(ARCH)..."
 	@mkdir -p releases
 	@CGO_ENABLED=1 go build -ldflags="-s -w" -o releases/blocknet .
+	@cd releases && zip -q blocknet-$(VERSION)-$(OS)-$(ARCH).zip blocknet
 ifeq ($(OS),darwin)
-	@cp crypto-rs/target/release/libblocknet_crypto.dylib releases/
-	@cd releases && zip -q blocknet-$(VERSION)-darwin-$(ARCH).zip blocknet libblocknet_crypto.dylib
-	@cd releases && shasum -a 256 blocknet-$(VERSION)-darwin-$(ARCH).zip >> SHA256SUMS.txt
-	@rm -f releases/blocknet releases/libblocknet_crypto.dylib
-	@echo "Built: releases/blocknet-$(VERSION)-darwin-$(ARCH).zip"
+	@cd releases && shasum -a 256 blocknet-$(VERSION)-$(OS)-$(ARCH).zip >> SHA256SUMS.txt
 else
-	@cp crypto-rs/target/release/libblocknet_crypto.so releases/
-	@cd releases && zip -q blocknet-$(VERSION)-linux-$(ARCH).zip blocknet libblocknet_crypto.so
-	@cd releases && sha256sum blocknet-$(VERSION)-linux-$(ARCH).zip >> SHA256SUMS.txt
-	@rm -f releases/blocknet releases/libblocknet_crypto.so
-	@echo "Built: releases/blocknet-$(VERSION)-linux-$(ARCH).zip"
+	@cd releases && sha256sum blocknet-$(VERSION)-$(OS)-$(ARCH).zip >> SHA256SUMS.txt
 endif
+	@rm -f releases/blocknet
+	@echo "Built: releases/blocknet-$(VERSION)-$(OS)-$(ARCH).zip"
 	@echo "Checksum added to releases/SHA256SUMS.txt"
 
 # Run tests
@@ -95,7 +80,7 @@ deps:
 deploy:
 	@echo "Deploying to seed node..."
 	rsync -avz --exclude 'target/' --exclude '.git/' --exclude '*.dat' --exclude 'data/' --exclude 'releases/' . blocknet:~/blocknet/
-	ssh blocknet "cd ~/blocknet && make build-rust && make install && make build-go"
+	ssh blocknet "cd ~/blocknet && make all"
 
 # Deploy release to website
 deploy-release: release

@@ -257,6 +257,22 @@ func (m *Miner) IsRunning() bool {
 	return m.running.Load()
 }
 
+// SetThreads updates the number of mining threads (takes effect on next block)
+func (m *Miner) SetThreads(n int) {
+	if n < 1 {
+		n = 1
+	}
+	m.config.Threads = n
+}
+
+// Threads returns the current thread count
+func (m *Miner) Threads() int {
+	if m.config.Threads < 1 {
+		return 1
+	}
+	return m.config.Threads
+}
+
 // Stats returns current mining statistics
 func (m *Miner) Stats() MinerStats {
 	return MinerStats{

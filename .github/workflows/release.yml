@@ -28,8 +28,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet crypto-rs/target/release/libblocknet_crypto.so dist/
-          cd dist && zip -q ../blocknet-amd64-linux-${{ env.VERSION }}.zip blocknet libblocknet_crypto.so
+          cp blocknet dist/
+          cd dist && zip -q ../blocknet-amd64-linux-${{ env.VERSION }}.zip blocknet
       
       - uses: actions/upload-artifact@v4
         with:
@@ -54,8 +54,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet crypto-rs/target/release/libblocknet_crypto.so dist/
-          cd dist && zip -q ../blocknet-arm64-linux-${{ env.VERSION }}.zip blocknet libblocknet_crypto.so
+          cp blocknet dist/
+          cd dist && zip -q ../blocknet-arm64-linux-${{ env.VERSION }}.zip blocknet
       
       - uses: actions/upload-artifact@v4
         with:
@@ -80,8 +80,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet crypto-rs/target/release/libblocknet_crypto.dylib dist/
-          cd dist && zip -q ../blocknet-arm64-darwin-${{ env.VERSION }}.zip blocknet libblocknet_crypto.dylib
+          cp blocknet dist/
+          cd dist && zip -q ../blocknet-arm64-darwin-${{ env.VERSION }}.zip blocknet
       
       - uses: actions/upload-artifact@v4
         with:
@@ -106,8 +106,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet crypto-rs/target/release/libblocknet_crypto.dylib dist/
-          cd dist && zip -q ../blocknet-amd64-darwin-${{ env.VERSION }}.zip blocknet libblocknet_crypto.dylib
+          cp blocknet dist/
+          cd dist && zip -q ../blocknet-amd64-darwin-${{ env.VERSION }}.zip blocknet
       
       - uses: actions/upload-artifact@v4
         with:
@@ -142,8 +142,7 @@ jobs:
         run: |
           mkdir -p dist
           cp blocknet.exe dist/
-          cp crypto-rs/target/release/blocknet_crypto.dll dist/
-          cd dist && zip -q ../blocknet-amd64-windows-${{ env.VERSION }}.zip blocknet.exe blocknet_crypto.dll
+          cd dist && zip -q ../blocknet-amd64-windows-${{ env.VERSION }}.zip blocknet.exe
       
       - uses: actions/upload-artifact@v4
         with:

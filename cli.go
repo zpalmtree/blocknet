@@ -394,7 +394,7 @@ Commands:%s
   peers             List connected peers
   banned            List banned peers
   export-peer       Export peer address to peer.txt
-  mining start|stop Control mining
+  mining start|stop|threads Control mining
   sync              Force chain sync
   seed              Show recovery seed (careful!)
   viewkeys          Export view-only wallet keys
@@ -672,8 +672,9 @@ func (c *CLI) cmdMining(args []string) error {
 			fmt.Println("Mining already running")
 			return nil
 		}
-		fmt.Println("Starting miner...")
-		fmt.Println("  Note: Argon2id PoW uses ~2GB RAM per hash")
+		c.daemon.Miner().SetThreads(1)
+		fmt.Println("Starting miner (1 thread)...")
+		fmt.Println("  Note: Argon2id PoW uses ~2GB RAM per thread")
 		fmt.Println("  First hash may take 10-30 seconds...")
 		c.daemon.StartMining()
 		fmt.Println("Mining started! Type 'mining' to see stats")
@@ -685,8 +686,22 @@ func (c *CLI) cmdMining(args []string) error {
 		fmt.Println("Stopping miner...")
 		c.daemon.StopMining()
 		fmt.Println("Mining stopped")
+	case "threads":
+		if len(args) < 2 {
+			fmt.Printf("Mining threads: %d\n", c.daemon.Miner().Threads())
+			return nil
+		}
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 {
+			return fmt.Errorf("usage: mining threads <N> (N >= 1)")
+		}
+		c.daemon.Miner().SetThreads(n)
+		fmt.Printf("Mining threads set to %d (uses ~%dGB RAM)\n", n, n*2)
+		if c.daemon.IsMining() {
+			fmt.Println("  Takes effect on next block attempt")
+		}
 	default:
-		return fmt.Errorf("usage: mining [start|stop]")
+		return fmt.Errorf("usage: mining [start|stop|threads <N>]")
 	}
 	return nil
 }

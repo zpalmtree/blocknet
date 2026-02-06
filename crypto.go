@@ -1,7 +1,10 @@
 package main
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/crypto-rs/target/release -lblocknet_crypto
+#cgo LDFLAGS: ${SRCDIR}/crypto-rs/target/release/libblocknet_crypto.a -lm
+#cgo linux LDFLAGS: -ldl -lpthread
+#cgo darwin LDFLAGS: -ldl -lpthread -framework Security
+#cgo windows LDFLAGS: -lws2_32 -luserenv -lbcrypt -lntdll
 #include "crypto-rs/blocknet_crypto.h"
 */
 import "C"
