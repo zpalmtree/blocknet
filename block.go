@@ -848,7 +848,11 @@ func (c *Chain) getAncestorPath(tip [32]byte) [][32]byte {
 	path := make([][32]byte, block.Header.Height+1)
 	current := tip
 	for {
-		b := c.blocks[current]
+		b, exists := c.blocks[current]
+		if !exists {
+			// Parent block not found - chain is incomplete
+			return nil
+		}
 		path[b.Header.Height] = current
 		if b.Header.Height == 0 {
 			break
