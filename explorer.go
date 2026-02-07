@@ -389,6 +389,8 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <meta property="og:title" content="blocknet explorer">
 <meta property="og:description" content="Zero-knowledge money">
 <meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
+<meta property="og:image:width" content="1024">
+<meta property="og:image:height" content="1024">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
@@ -446,6 +448,8 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <meta property="og:title" content="Block {{.Height}} - blocknet">
 <meta property="og:description" content="Zero-knowledge money">
 <meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
+<meta property="og:image:width" content="1024">
+<meta property="og:image:height" content="1024">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com/block/{{.Height}}">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
@@ -500,6 +504,8 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <meta property="og:title" content="Transaction - blocknet">
 <meta property="og:description" content="Zero-knowledge money">
 <meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
+<meta property="og:image:width" content="1024">
+<meta property="og:image:height" content="1024">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#0a0a0a">
