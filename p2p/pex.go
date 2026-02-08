@@ -130,36 +130,46 @@ func (pex *PeerExchange) connectToSeeds() error {
 	}
 
 	ourID := pex.node.PeerID()
-	var connected int
-	var skipped int
+	
+	// Retry logic: try 3 times with 2 second delays
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		var connected int
+		var skipped int
 
-	for _, seed := range pex.seedNodes {
-		// Don't connect to ourselves
-		if seed.ID == ourID {
-			skipped++
-			continue
+		for _, seed := range pex.seedNodes {
+			// Don't connect to ourselves
+			if seed.ID == ourID {
+				skipped++
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(pex.ctx, 10*time.Second)
+			err := pex.node.host.Connect(ctx, seed)
+			cancel()
+
+			if err == nil {
+				connected++
+				pex.addKnownPeer(seed.ID, seed.Addrs)
+			}
 		}
 
-		// log.Printf("Connecting to seed: %s", seed.String())
-		ctx, cancel := context.WithTimeout(pex.ctx, 10*time.Second)
-		err := pex.node.host.Connect(ctx, seed)
-		cancel()
+		// If we connected to at least one seed, or all seeds were ourselves, we're good
+		if connected > 0 || len(pex.seedNodes) == skipped {
+			if attempt > 1 {
+				log.Printf("Connected to %d seed node(s) on attempt %d", connected, attempt)
+			}
+			return nil
+		}
 
-		if err == nil {
-			connected++
-			pex.addKnownPeer(seed.ID, seed.Addrs)
-			// log.Printf("Connected to seed: %s", seed.ID)
-		} else {
-			log.Printf("Failed to connect to seed %s: %v", seed.ID, err)
+		// Not the last attempt - wait and retry
+		if attempt < maxRetries {
+			time.Sleep(2 * time.Second)
 		}
 	}
 
-	// Only error if we had seeds to connect to (excluding self) and failed all
-	if connected == 0 && len(pex.seedNodes) > skipped {
-		return fmt.Errorf("failed to connect to any seed nodes")
-	}
-
-	return nil
+	// All retries failed
+	return fmt.Errorf("failed to connect to any seed nodes after %d attempts", maxRetries)
 }
 
 // exchangeLoop periodically exchanges peers with connected nodes
