@@ -68,6 +68,8 @@ type SyncManager struct {
 	getBlocksByHeight func(startHeight uint64, max int) ([][]byte, error)
 	processBlock      func(data []byte) error
 	processHeader     func(data []byte) error
+	getMempool        func() [][]byte
+	processTx         func(data []byte) error
 
 	// Sync state
 	syncing       bool
@@ -86,6 +88,8 @@ type SyncConfig struct {
 	GetBlocksByHeight func(startHeight uint64, max int) ([][]byte, error)
 	ProcessBlock      func(data []byte) error
 	ProcessHeader     func(data []byte) error
+	GetMempool        func() [][]byte         // Get all mempool transactions
+	ProcessTx         func(data []byte) error // Process a mempool transaction
 }
 
 // NewSyncManager creates a new sync manager
@@ -98,6 +102,8 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		getBlocksByHeight: cfg.GetBlocksByHeight,
 		processBlock:      cfg.ProcessBlock,
 		processHeader:     cfg.ProcessHeader,
+		getMempool:        cfg.GetMempool,
+		processTx:         cfg.ProcessTx,
 	}
 }
 
@@ -259,8 +265,19 @@ func (sm *SyncManager) relayBlock(from peer.ID, data []byte) {
 
 // handleGetMempool responds to a mempool request
 func (sm *SyncManager) handleGetMempool(s network.Stream) {
-	// Will be implemented with mempool integration
-	writeMessage(s, SyncMsgMempool, []byte("[]"))
+	if sm.getMempool == nil {
+		writeMessage(s, SyncMsgMempool, []byte("[]"))
+		return
+	}
+
+	txs := sm.getMempool()
+	data, err := json.Marshal(txs)
+	if err != nil {
+		writeMessage(s, SyncMsgMempool, []byte("[]"))
+		return
+	}
+
+	writeMessage(s, SyncMsgMempool, data)
 }
 
 // syncLoop periodically checks if we need to sync
@@ -430,6 +447,14 @@ func (sm *SyncManager) syncFrom(p peer.ID, peerStatus ChainStatus) {
 			break
 		}
 	}
+
+	// After syncing blocks, request mempool from the peer
+	if sm.getMempool != nil && sm.processTx != nil {
+		if err := sm.fetchAndProcessMempool(p); err != nil {
+			// log.Printf("[sync] failed to fetch mempool: %v", err)
+			// Don't penalize - mempool sync is optional
+		}
+	}
 }
 
 // fetchHeaders fetches headers from a peer
@@ -580,3 +605,44 @@ func (sm *SyncManager) SyncProgress() (peer.ID, time.Duration) {
 
 	return sm.syncPeer, time.Since(sm.syncStartTime)
 }
+
+// fetchAndProcessMempool requests mempool transactions from a peer and processes them
+func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
+	ctx, cancel := context.WithTimeout(sm.ctx, 60*time.Second)
+	defer cancel()
+
+	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	// Request mempool
+	if err := writeMessage(s, SyncMsgGetMempool, []byte{}); err != nil {
+		return err
+	}
+
+	// Read response
+	msgType, data, err := readMessage(s)
+	if err != nil {
+		return err
+	}
+
+	if msgType != SyncMsgMempool {
+		return fmt.Errorf("unexpected message type: %d", msgType)
+	}
+
+	var txs [][]byte
+	if err := json.Unmarshal(data, &txs); err != nil {
+		return err
+	}
+
+	// Process each transaction
+	for _, txData := range txs {
+		// Ignore errors - some txs might be duplicates or invalid
+		sm.processTx(txData)
+	}
+
+	return nil
+}
+

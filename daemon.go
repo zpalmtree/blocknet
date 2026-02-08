@@ -161,6 +161,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		GetBlocksByHeight: d.getBlocksByHeight,
 		ProcessBlock:      d.processBlockData,
 		ProcessHeader:     nil, // Full-block sync, no header processing
+		GetMempool:        d.getMempoolTxs,
+		ProcessTx:         d.processTxData,
 	}
 	d.syncMgr = p2p.NewSyncManager(node, syncCfg)
 
@@ -477,6 +479,29 @@ func (d *Daemon) getBlocksByHeight(startHeight uint64, max int) ([][]byte, error
 	}
 
 	return blocks, nil
+}
+
+// getMempoolTxs returns all serialized transactions in the mempool
+func (d *Daemon) getMempoolTxs() [][]byte {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.mempool.GetAllTransactionData()
+}
+
+// processTxData handles an incoming transaction from a peer
+func (d *Daemon) processTxData(data []byte) error {
+	tx, err := DeserializeTx(data)
+	if err != nil {
+		return fmt.Errorf("invalid transaction: %w", err)
+	}
+
+	// Add to mempool (validates the transaction)
+	if err := d.mempool.AddTransaction(tx, data); err != nil {
+		// Not necessarily an error - might be duplicate or already spent
+		return nil
+	}
+
+	return nil
 }
 
 // Stats returns daemon statistics
