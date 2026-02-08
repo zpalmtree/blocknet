@@ -91,6 +91,26 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	emitted, remaining, pctEmitted := e.getSupplyInfo()
 
+	// Get mempool transactions
+	type mempoolTx struct {
+		Hash    string
+		Fee     float64
+		FeeRate uint64
+		Size    int
+		Ago     string
+	}
+	var mempoolTxs []mempoolTx
+	mempoolEntries := e.daemon.mempool.GetAllEntries()
+	for _, entry := range mempoolEntries {
+		mempoolTxs = append(mempoolTxs, mempoolTx{
+			Hash:    fmt.Sprintf("%x", entry.TxID[:]),
+			Fee:     float64(entry.Fee) / 100_000_000,
+			FeeRate: entry.FeeRate,
+			Size:    entry.Size,
+			Ago:     timeAgo(entry.AddedAt.Unix()),
+		})
+	}
+
 	// Get miner stats
 	// Estimate network hashrate from recent block times and difficulty
 	// hashrate ≈ difficulty / average_block_time
@@ -127,6 +147,7 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"Remaining":   float64(remaining) / 100_000_000,
 		"PctEmitted":  fmt.Sprintf("%.4f", pctEmitted),
 		"TailStarted": pctEmitted >= 100,
+		"MempoolTxs":  mempoolTxs,
 		"Blocks":      blocks,
 	}
 
@@ -219,8 +240,23 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Search for tx in blocks
+	// Search for tx in blocks first
 	tx, blockHeight, found := e.findTx(path)
+	
+	// If not found in blocks, check mempool
+	inMempool := false
+	if !found {
+		hashBytes, err := hex.DecodeString(path[:64])
+		if err == nil && len(hashBytes) == 32 {
+			var txID [32]byte
+			copy(txID[:], hashBytes)
+			tx, found = e.daemon.mempool.GetTransaction(txID)
+			if found {
+				inMempool = true
+			}
+		}
+	}
+	
 	if !found {
 		http.Error(w, "Transaction not found", http.StatusNotFound)
 		return
@@ -251,19 +287,25 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	confirmations := e.daemon.chain.Height() - blockHeight + 1
-
 	data := map[string]interface{}{
-		"Hash":          fmt.Sprintf("%x", txID),
-		"BlockHeight":   blockHeight,
-		"Confirmations": confirmations,
-		"IsCoinbase":    isCoinbase,
-		"Fee":           float64(tx.Fee) / 1e9,
-		"TxPubKey":      fmt.Sprintf("%x", tx.TxPublicKey),
-		"InputCount":    len(tx.Inputs),
-		"OutputCount":   len(tx.Outputs),
-		"Inputs":        inputs,
-		"Outputs":       outputs,
+		"Hash":        fmt.Sprintf("%x", txID),
+		"IsCoinbase":  isCoinbase,
+		"Fee":         float64(tx.Fee) / 1e9,
+		"TxPubKey":    fmt.Sprintf("%x", tx.TxPublicKey),
+		"InputCount":  len(tx.Inputs),
+		"OutputCount": len(tx.Outputs),
+		"Inputs":      inputs,
+		"Outputs":     outputs,
+		"InMempool":   inMempool,
+	}
+
+	if inMempool {
+		data["BlockHeight"] = "Pending"
+		data["Confirmations"] = 0
+	} else {
+		confirmations := e.daemon.chain.Height() - blockHeight + 1
+		data["BlockHeight"] = blockHeight
+		data["Confirmations"] = confirmations
 	}
 
 	renderTemplate(w, explorerTxTmpl, data)
@@ -301,10 +343,20 @@ func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Then check if it's a tx hash
+		// Then check if it's a tx hash in blockchain
 		if _, _, found := e.findTx(q); found {
 			http.Redirect(w, r, "/tx/"+q, http.StatusFound)
 			return
+		}
+
+		// Check mempool
+		if decoded, err := hex.DecodeString(q); err == nil && len(decoded) == 32 {
+			var txID [32]byte
+			copy(txID[:], decoded)
+			if e.daemon.mempool.HasTransaction(txID) {
+				http.Redirect(w, r, "/tx/"+q, http.StatusFound)
+				return
+			}
 		}
 
 		// Default to block (will show not found if invalid)
@@ -418,6 +470,24 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .TailStarted}}<div class="stat"><div class="stat-v" style="color:#af0">Active</div><div class="stat-k">Tail Emission</div></div>{{end}}
 </div>
 
+<h2><span class="g">#</span> mempool</h2>
+{{if .MempoolTxs}}
+<table>
+<tr><th>Hash</th><th>Fee</th><th>Fee/byte</th><th>Size</th><th>Age</th></tr>
+{{range .MempoolTxs}}
+<tr>
+<td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
+<td>{{printf "%.8f" .Fee}}</td>
+<td>{{.FeeRate}}</td>
+<td>{{.Size}} B</td>
+<td>{{.Ago}}</td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p class="d" style="padding:20px 0">Mempool is empty</p>
+{{end}}
+
 <h2><span class="g">#</span> recent blocks</h2>
 <table>
 <tr><th>Height</th><th>Hash</th><th>Age</th><th>Txs</th></tr>
@@ -515,7 +585,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <h2><span class="g">#</span> transaction</h2>
 <div class="box">
 <div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{.Hash}}</div></div>
-<div class="prop"><div class="prop-k">Block</div><div class="prop-v"><a href="/block/{{.BlockHeight}}">{{.BlockHeight}}</a> ({{.Confirmations}} confirmations)</div></div>
+<div class="prop"><div class="prop-k">Block</div><div class="prop-v">{{if .InMempool}}<span class="d">Pending (in mempool)</span>{{else}}<a href="/block/{{.BlockHeight}}">{{.BlockHeight}}</a> ({{.Confirmations}} confirmations){{end}}</div></div>
 <div class="prop"><div class="prop-k">Type</div><div class="prop-v">{{if .IsCoinbase}}<span class="g">coinbase</span>{{else}}transfer{{end}}</div></div>
 {{if not .IsCoinbase}}<div class="prop"><div class="prop-k">Fee</div><div class="prop-v">{{printf "%.9f" .Fee}} BNT</div></div>{{end}}
 <div class="prop"><div class="prop-k">Inputs</div><div class="prop-v">{{.InputCount}}</div></div>

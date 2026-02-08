@@ -102,7 +102,7 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 			return nil, err
 		}
 		rotationAge = cfg.RotationInterval
-		log.Printf("Using ephemeral identity: %s (rotates every %s)", id.String()[:16]+"...", rotationAge)
+		// log.Printf("Using ephemeral identity: %s (rotates every %s)", id.String()[:16]+"...", rotationAge)
 	}
 
 	return &IdentityManager{

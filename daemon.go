@@ -372,7 +372,7 @@ func (d *Daemon) handleTx(from peer.ID, data []byte) {
 		return
 	}
 
-	log.Printf("Received transaction from %s", from.String()[:8])
+	// log.Printf("Received transaction from %s", from.String()[:8])
 }
 
 // Chain status callbacks for sync manager

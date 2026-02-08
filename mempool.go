@@ -471,6 +471,28 @@ func (m *Mempool) Stats() MempoolStats {
 	return stats
 }
 
+// GetAllEntries returns all mempool entries sorted by fee rate (highest first)
+func (m *Mempool) GetAllEntries() []*MempoolEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entries := make([]*MempoolEntry, 0, len(m.txByID))
+	for _, entry := range m.txByID {
+		entries = append(entries, entry)
+	}
+
+	// Sort by fee rate descending
+	for i := 0; i < len(entries)-1; i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].FeeRate > entries[i].FeeRate {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	return entries
+}
+
 // MarshalJSON serializes mempool for debugging
 func (m *Mempool) MarshalJSON() ([]byte, error) {
 	m.mu.RLock()

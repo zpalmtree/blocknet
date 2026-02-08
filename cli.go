@@ -502,8 +502,8 @@ func (c *CLI) cmdBalance() {
 	pending := c.wallet.PendingBalance(height)
 	total, unspent := c.wallet.OutputCount()
 
-	fmt.Printf("  unlocked: %s BNT\n", formatAmount(spendable))
-	fmt.Printf("  locked:   %s BNT\n", formatAmount(pending))
+	fmt.Printf("  unlocked: %s\n", formatAmount(spendable))
+	fmt.Printf("  locked:   %s\n", formatAmount(pending))
 	fmt.Printf("  (%d unspent outputs", unspent)
 	if total > unspent {
 		fmt.Printf(", %d spent", total-unspent)
