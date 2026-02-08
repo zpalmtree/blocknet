@@ -60,9 +60,6 @@ func NewMiner(chain *Chain, mempool *Mempool, config MinerConfig) *Miner {
 		config:  config,
 		chain:   chain,
 		mempool: mempool,
-		stats: MinerStats{
-			StartTime: time.Now(),
-		},
 	}
 }
 
@@ -190,6 +187,12 @@ func (m *Miner) Start(ctx context.Context, blockChan chan<- *Block) {
 	if m.running.Swap(true) {
 		return // Already running
 	}
+
+	// Reset statistics so old data from a previous mining session is not included
+	atomic.StoreUint64(&m.stats.HashCount, 0)
+	atomic.StoreUint64(&m.stats.BlocksFound, 0)
+	m.stats.StartTime = time.Now()
+	m.stats.LastHashTime = time.Time{}
 
 	// Create a cancellable context for this mining session
 	mineCtx, cancel := context.WithCancel(ctx)
