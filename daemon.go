@@ -506,15 +506,18 @@ func (d *Daemon) processTxData(data []byte) error {
 
 // Stats returns daemon statistics
 type DaemonStats struct {
-	PeerID       string `json:"peer_id"`
-	Peers        int    `json:"peers"`
-	ChainHeight  uint64 `json:"chain_height"`
-	BestHash     string `json:"best_hash"`
-	TotalWork    uint64 `json:"total_work"`
-	MempoolSize  int    `json:"mempool_size"`
-	MempoolBytes int    `json:"mempool_bytes"`
-	Syncing      bool   `json:"syncing"`
-	IdentityAge  string `json:"identity_age"`
+	PeerID        string `json:"peer_id"`
+	Peers         int    `json:"peers"`
+	ChainHeight   uint64 `json:"chain_height"`
+	BestHash      string `json:"best_hash"`
+	TotalWork     uint64 `json:"total_work"`
+	MempoolSize   int    `json:"mempool_size"`
+	MempoolBytes  int    `json:"mempool_bytes"`
+	Syncing       bool   `json:"syncing"`
+	SyncProgress  uint64 `json:"sync_progress,omitempty"`
+	SyncTarget    uint64 `json:"sync_target,omitempty"`
+	SyncPercent   string `json:"sync_percent,omitempty"`
+	IdentityAge   string `json:"identity_age"`
 }
 
 func (d *Daemon) Stats() DaemonStats {
@@ -522,8 +525,8 @@ func (d *Daemon) Stats() DaemonStats {
 	defer d.mu.RUnlock()
 
 	bestHash := d.chain.BestHash()
-
-	return DaemonStats{
+	
+	stats := DaemonStats{
 		PeerID:       d.node.PeerID().String(),
 		Peers:        len(d.node.Peers()),
 		ChainHeight:  d.chain.Height(),
@@ -534,6 +537,19 @@ func (d *Daemon) Stats() DaemonStats {
 		Syncing:      d.syncMgr.IsSyncing(),
 		IdentityAge:  d.node.IdentityAge().Round(time.Second).String(),
 	}
+
+	// Add sync progress if syncing
+	if stats.Syncing {
+		progress, target, _ := d.syncMgr.SyncProgress()
+		stats.SyncProgress = progress
+		stats.SyncTarget = target
+		if target > 0 {
+			pct := float64(progress) / float64(target) * 100
+			stats.SyncPercent = fmt.Sprintf("%.1f%%", pct)
+		}
+	}
+
+	return stats
 }
 
 // Getters for components

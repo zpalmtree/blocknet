@@ -55,6 +55,25 @@ type BlocksByHeightRequest struct {
 	MaxBlocks   int    `json:"max_blocks"`
 }
 
+// PeerStatus combines peer ID with their chain status
+type PeerStatus struct {
+	Peer   peer.ID
+	Status ChainStatus
+}
+
+// SyncWork represents a batch of blocks to download
+type SyncWork struct {
+	Start uint64
+	End   uint64
+}
+
+// DownloadedBlock represents a block downloaded from a peer
+type DownloadedBlock struct {
+	Height uint64
+	Data   []byte
+	Peer   peer.ID
+}
+
 // SyncManager handles chain synchronization
 type SyncManager struct {
 	mu sync.RWMutex
@@ -72,9 +91,12 @@ type SyncManager struct {
 	processTx         func(data []byte) error
 
 	// Sync state
-	syncing       bool
-	syncPeer      peer.ID
-	syncStartTime time.Time
+	syncing        bool
+	syncPeer       peer.ID
+	syncStartTime  time.Time
+	syncTarget     uint64 // Target height we're syncing to
+	syncProgress   uint64 // Current height we've processed to
+	downloadBuffer map[uint64][]byte // Buffer for out-of-order blocks
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -104,6 +126,7 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		processHeader:     cfg.ProcessHeader,
 		getMempool:        cfg.GetMempool,
 		processTx:         cfg.ProcessTx,
+		downloadBuffer:    make(map[uint64][]byte),
 	}
 }
 
@@ -320,9 +343,8 @@ func (sm *SyncManager) checkSync() {
 
 	ourStatus := sm.getStatus()
 
-	// Find the peer with the most work/height
-	var bestPeer peer.ID
-	var bestStatus ChainStatus
+	// Query status from all peers
+	var peerStatuses []PeerStatus
 
 	for _, p := range peers {
 		status, err := sm.getStatusFrom(p)
@@ -330,24 +352,44 @@ func (sm *SyncManager) checkSync() {
 			// log.Printf("[sync] failed to get status from %s: %v", p.String()[:16], err)
 			continue
 		}
-
-
-		if status.TotalWork > bestStatus.TotalWork ||
-			(status.TotalWork == bestStatus.TotalWork && status.Height > bestStatus.Height) {
-			bestPeer = p
-			bestStatus = status
-		}
+		peerStatuses = append(peerStatuses, PeerStatus{Peer: p, Status: status})
 	}
 
-	if bestPeer == "" {
+	if len(peerStatuses) == 0 {
 		return
 	}
 
-	// Sync if peer has more work OR more height (handles fork recovery)
-	if bestStatus.TotalWork > ourStatus.TotalWork {
-		go sm.syncFrom(bestPeer, bestStatus)
-	} else if bestStatus.Height > ourStatus.Height {
-		go sm.syncFrom(bestPeer, bestStatus)
+	// Find peers with the most work
+	var maxWork uint64
+	for _, ps := range peerStatuses {
+		if ps.Status.TotalWork > maxWork {
+			maxWork = ps.Status.TotalWork
+		}
+	}
+
+	// Collect all peers with max work (or close to it)
+	var syncPeers []PeerStatus
+	for _, ps := range peerStatuses {
+		if ps.Status.TotalWork >= maxWork {
+			syncPeers = append(syncPeers, ps)
+		}
+	}
+
+	if len(syncPeers) == 0 {
+		return
+	}
+
+	// Use the highest height among max work peers as target
+	targetHeight := syncPeers[0].Status.Height
+	for _, ps := range syncPeers {
+		if ps.Status.Height > targetHeight {
+			targetHeight = ps.Status.Height
+		}
+	}
+
+	// Sync if we're behind
+	if maxWork > ourStatus.TotalWork || targetHeight > ourStatus.Height {
+		go sm.parallelSyncFrom(syncPeers, targetHeight)
 	}
 }
 
@@ -387,74 +429,218 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 	return status, nil
 }
 
-// syncFrom performs chain sync from a peer
-func (sm *SyncManager) syncFrom(p peer.ID, peerStatus ChainStatus) {
+// parallelSyncFrom performs parallel chain sync from multiple peers
+func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64) {
 	sm.mu.Lock()
 	if sm.syncing {
 		sm.mu.Unlock()
 		return
 	}
 	sm.syncing = true
-	sm.syncPeer = p
+	if len(peers) > 0 {
+		sm.syncPeer = peers[0].Peer // Primary peer for display
+	}
 	sm.syncStartTime = time.Now()
+	sm.syncTarget = targetHeight
+	sm.downloadBuffer = make(map[uint64][]byte) // Reset buffer
 	sm.mu.Unlock()
 
 	defer func() {
 		sm.mu.Lock()
 		sm.syncing = false
 		sm.syncPeer = ""
+		sm.syncTarget = 0
+		sm.syncProgress = 0
+		sm.downloadBuffer = make(map[uint64][]byte) // Clear buffer
 		sm.mu.Unlock()
 	}()
 
 	// Get our current height
 	ourStatus := sm.getStatus()
 	startHeight := ourStatus.Height + 1
+	sm.mu.Lock()
+	sm.syncProgress = ourStatus.Height
+	sm.mu.Unlock()
 
-	// log.Printf("[sync] starting sync from height %d to %d from peer %s", startHeight, peerStatus.Height, p.String()[:16])
+	// log.Printf("[sync] starting parallel sync from height %d to %d with %d peers", startHeight, targetHeight, len(peers))
 
-	// Fetch full blocks in batches (more private than header-first)
-	for {
-		blocks, err := sm.fetchBlocksByHeight(p, startHeight, MaxBlocksPerRequest)
-		if err != nil {
-			// log.Printf("[sync] failed to fetch blocks at height %d: %v", startHeight, err)
-			sm.node.PenalizePeer(p, ScorePenaltyTimeout, "fetch blocks timeout")
-			break
-		}
-		if len(blocks) == 0 {
-			// log.Printf("[sync] no blocks returned at height %d", startHeight)
-			break
-		}
+	// Use up to 3 peers for parallel download
+	numDownloaders := len(peers)
+	if numDownloaders > 3 {
+		numDownloaders = 3
+	}
 
-		// log.Printf("[sync] received %d blocks starting at height %d", len(blocks), startHeight)
+	// Channel to receive downloaded blocks
+	blockChan := make(chan DownloadedBlock, MaxBlocksPerRequest*numDownloaders)
 
-		// Process blocks (validates and adds to chain)
-		for _, blockData := range blocks {
-			if err := sm.processBlock(blockData); err != nil {
-				// log.Printf("[sync] failed to process block at height %d: %v", startHeight+uint64(i), err)
-				// Penalize peer for sending invalid blocks
-				sm.node.PenalizePeer(p, ScorePenaltyInvalid, "invalid block data")
-				return // Stop syncing with this peer
+	// Channel to distribute work
+	workChan := make(chan SyncWork, 10)
+
+	// Context for downloaders
+	ctx, cancel := context.WithCancel(sm.ctx)
+	defer cancel()
+
+	var downloadWg sync.WaitGroup
+
+	// Start downloader goroutines
+	for i := 0; i < numDownloaders && i < len(peers); i++ {
+		downloadWg.Add(1)
+		peerID := peers[i].Peer
+		go func(p peer.ID) {
+			defer downloadWg.Done()
+			sm.downloader(ctx, p, workChan, blockChan)
+		}(peerID)
+	}
+
+	// Start work distributor
+	go func() {
+		currentHeight := startHeight
+		for currentHeight <= targetHeight {
+			batchSize := uint64(MaxBlocksPerRequest)
+			if currentHeight+batchSize-1 > targetHeight {
+				batchSize = targetHeight - currentHeight + 1
 			}
-			// Reward peer for valid blocks
-			sm.node.RewardPeer(p)
-		}
 
-		startHeight += uint64(len(blocks))
-
-		// Check if we've caught up
-		if startHeight > peerStatus.Height {
-			// log.Printf("[sync] sync complete, now at height %d", startHeight-1)
-			break
+			select {
+			case workChan <- SyncWork{Start: currentHeight, End: currentHeight + batchSize - 1}:
+				currentHeight += batchSize
+			case <-ctx.Done():
+				return
+			}
 		}
+		close(workChan)
+	}()
+
+	// Process blocks sequentially in order
+	nextHeight := startHeight
+	processorDone := make(chan struct{})
+
+	go func() {
+		defer close(processorDone)
+		for nextHeight <= targetHeight {
+			// Try to get block from buffer first
+			sm.mu.Lock()
+			blockData, inBuffer := sm.downloadBuffer[nextHeight]
+			if inBuffer {
+				delete(sm.downloadBuffer, nextHeight)
+			}
+			sm.mu.Unlock()
+
+			if !inBuffer {
+				// Wait for block to arrive
+				select {
+				case block := <-blockChan:
+					if block.Height == nextHeight {
+						blockData = block.Data
+					} else {
+						// Out of order - buffer it
+						sm.mu.Lock()
+						sm.downloadBuffer[block.Height] = block.Data
+						sm.mu.Unlock()
+						continue
+					}
+				case <-ctx.Done():
+					return
+				case <-time.After(180 * time.Second):
+					// log.Printf("[sync] timeout waiting for block %d", nextHeight)
+					return
+				}
+			}
+
+			// Process block
+			if err := sm.processBlock(blockData); err != nil {
+				// log.Printf("[sync] failed to process block at height %d: %v", nextHeight, err)
+				// Invalid block - abort sync
+				return
+			}
+
+			// Update progress
+			sm.mu.Lock()
+			sm.syncProgress = nextHeight
+			sm.mu.Unlock()
+
+			nextHeight++
+
+			// Log progress every 50 blocks
+			if nextHeight%50 == 0 || nextHeight == targetHeight+1 {
+				// log.Printf("[sync] progress: %d/%d (%.1f%%)", nextHeight-1, targetHeight, float64(nextHeight-1)/float64(targetHeight)*100)
+			}
+		}
+	}()
+
+	// Wait for processing to complete or timeout
+	select {
+	case <-processorDone:
+		// log.Printf("[sync] sync complete at height %d", nextHeight-1)
+	case <-time.After(10 * time.Minute):
+		// log.Printf("[sync] sync timeout")
+	case <-ctx.Done():
+		// log.Printf("[sync] sync cancelled")
 	}
 
-	// After syncing blocks, request mempool from the peer
-	if sm.getMempool != nil && sm.processTx != nil {
-		if err := sm.fetchAndProcessMempool(p); err != nil {
+	// Signal downloaders to stop
+	cancel()
+	downloadWg.Wait()
+
+	// After syncing blocks, request mempool from first peer
+	if len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
+		if err := sm.fetchAndProcessMempool(peers[0].Peer); err != nil {
 			// log.Printf("[sync] failed to fetch mempool: %v", err)
-			// Don't penalize - mempool sync is optional
 		}
 	}
+}
+
+// downloader fetches blocks for assigned ranges
+func (sm *SyncManager) downloader(ctx context.Context, p peer.ID, workChan <-chan SyncWork, blockChan chan<- DownloadedBlock) {
+	for {
+		select {
+		case work, ok := <-workChan:
+			if !ok {
+				return
+			}
+
+			// Calculate batch size
+			batchSize := int(work.End - work.Start + 1)
+			if batchSize > MaxBlocksPerRequest {
+				batchSize = MaxBlocksPerRequest
+			}
+
+			// Fetch blocks
+			blocks, err := sm.fetchBlocksByHeight(p, work.Start, batchSize)
+			if err != nil {
+				// log.Printf("[sync] peer %s failed to fetch blocks %d-%d: %v", p.String()[:8], work.Start, work.End, err)
+				sm.node.PenalizePeer(p, ScorePenaltyTimeout, "fetch blocks timeout")
+				// Exit - work distributor will handle missing blocks via timeout
+				return
+			}
+
+			if len(blocks) == 0 {
+				// log.Printf("[sync] peer %s returned no blocks for range %d-%d", p.String()[:8], work.Start, work.End)
+				return
+			}
+
+			// Send blocks to processor
+			for i, blockData := range blocks {
+				height := work.Start + uint64(i)
+				select {
+				case blockChan <- DownloadedBlock{Height: height, Data: blockData, Peer: p}:
+					// Reward peer for valid data
+					sm.node.RewardPeer(p)
+				case <-ctx.Done():
+					return
+				}
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// syncFrom wraps single peer sync in the parallel sync mechanism
+func (sm *SyncManager) syncFrom(p peer.ID, peerStatus ChainStatus) {
+	peers := []PeerStatus{{Peer: p, Status: peerStatus}}
+	sm.parallelSyncFrom(peers, peerStatus.Height)
 }
 
 // fetchHeaders fetches headers from a peer
@@ -594,16 +780,16 @@ func (sm *SyncManager) IsSyncing() bool {
 	return sm.syncing
 }
 
-// SyncProgress returns sync progress info
-func (sm *SyncManager) SyncProgress() (peer.ID, time.Duration) {
+// SyncProgress returns sync progress info (current, target, elapsed)
+func (sm *SyncManager) SyncProgress() (uint64, uint64, time.Duration) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
 	if !sm.syncing {
-		return "", 0
+		return 0, 0, 0
 	}
 
-	return sm.syncPeer, time.Since(sm.syncStartTime)
+	return sm.syncProgress, sm.syncTarget, time.Since(sm.syncStartTime)
 }
 
 // fetchAndProcessMempool requests mempool transactions from a peer and processes them
