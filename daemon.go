@@ -555,10 +555,11 @@ func (d *Daemon) Stats() DaemonStats {
 }
 
 // Getters for components
-func (d *Daemon) Chain() *Chain     { return d.chain }
-func (d *Daemon) Mempool() *Mempool { return d.mempool }
-func (d *Daemon) Node() *p2p.Node   { return d.node }
-func (d *Daemon) Miner() *Miner     { return d.miner }
+func (d *Daemon) Chain() *Chain           { return d.chain }
+func (d *Daemon) Mempool() *Mempool       { return d.mempool }
+func (d *Daemon) Node() *p2p.Node         { return d.node }
+func (d *Daemon) Miner() *Miner           { return d.miner }
+func (d *Daemon) TriggerSync()            { d.syncMgr.TriggerSync() }
 
 // IsMining returns whether the miner is running
 func (d *Daemon) IsMining() bool {

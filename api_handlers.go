@@ -430,6 +430,17 @@ func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWalletSync triggers a blockchain sync check.
+// POST /api/wallet/sync
+func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	s.daemon.TriggerSync()
+	writeJSON(w, http.StatusOK, map[string]any{"status": "sync triggered"})
+}
+
 // ============================================================================
 // Mining handlers
 // ============================================================================
