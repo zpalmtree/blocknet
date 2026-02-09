@@ -364,17 +364,17 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 
 // handleTx processes a transaction from a peer (fluff phase)
 func (d *Daemon) handleTx(from peer.ID, data []byte) {
-	tx, err := DeserializeTx(data)
+	txData, aux := DecodeTxWithAux(data)
+
+	tx, err := DeserializeTx(txData)
 	if err != nil {
 		return
 	}
 
-	if err := d.mempool.AddTransaction(tx, data); err != nil {
+	if err := d.mempool.AddTransaction(tx, txData, aux); err != nil {
 		// Invalid or duplicate, ignore
 		return
 	}
-
-	// log.Printf("Received transaction from %s", from.String()[:8])
 }
 
 // Chain status callbacks for sync manager
@@ -481,22 +481,24 @@ func (d *Daemon) getBlocksByHeight(startHeight uint64, max int) ([][]byte, error
 	return blocks, nil
 }
 
-// getMempoolTxs returns all serialized transactions in the mempool
+// getMempoolTxs returns all serialized transactions in the mempool (with aux data)
 func (d *Daemon) getMempoolTxs() [][]byte {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.mempool.GetAllTransactionData()
+	return d.mempool.GetAllTransactionDataWithAux()
 }
 
 // processTxData handles an incoming transaction from a peer
 func (d *Daemon) processTxData(data []byte) error {
-	tx, err := DeserializeTx(data)
+	txData, aux := DecodeTxWithAux(data)
+
+	tx, err := DeserializeTx(txData)
 	if err != nil {
 		return fmt.Errorf("invalid transaction: %w", err)
 	}
 
 	// Add to mempool (validates the transaction)
-	if err := d.mempool.AddTransaction(tx, data); err != nil {
+	if err := d.mempool.AddTransaction(tx, txData, aux); err != nil {
 		// Not necessarily an error - might be duplicate or already spent
 		return nil
 	}
@@ -573,20 +575,32 @@ func (d *Daemon) MinerStats() MinerStats {
 	return d.miner.Stats()
 }
 
-// SubmitTransaction adds a transaction to mempool and broadcasts to peers
-func (d *Daemon) SubmitTransaction(txData []byte) error {
+// SubmitTransaction adds a transaction to mempool and broadcasts to peers.
+// aux is optional auxiliary data (e.g. encrypted payment IDs).
+func (d *Daemon) SubmitTransaction(txData []byte, aux ...*TxAuxData) error {
 	tx, err := DeserializeTx(txData)
 	if err != nil {
 		return fmt.Errorf("invalid transaction data: %w", err)
 	}
 
+	// Pass through aux data to mempool
+	var txAux *TxAuxData
+	if len(aux) > 0 {
+		txAux = aux[0]
+	}
+
 	// Validate and add to mempool
-	if err := d.mempool.AddTransaction(tx, txData); err != nil {
+	if err := d.mempool.AddTransaction(tx, txData, txAux); err != nil {
 		return fmt.Errorf("mempool rejected: %w", err)
 	}
 
-	// Broadcast via Dandelion++ for privacy
-	d.node.BroadcastTx(txData)
+	// Broadcast via Dandelion++ for privacy.
+	// Append aux data after TX bytes so payment IDs propagate.
+	broadcastData := txData
+	if txAux != nil {
+		broadcastData = EncodeTxWithAux(txData, txAux)
+	}
+	d.node.BroadcastTx(broadcastData)
 
 	return nil
 }

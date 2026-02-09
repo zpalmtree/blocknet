@@ -19,6 +19,7 @@ type Recipient struct {
 type TransferResult struct {
 	TxData       []byte         // Serialized transaction
 	TxID         [32]byte       // Transaction ID
+	TxPrivKey    [32]byte       // Transaction private key (for sender-side shared secret derivation)
 	SpentOutputs []*OwnedOutput // Outputs that were spent
 	Fee          uint64         // Fee paid
 	Change       uint64         // Change returned
@@ -106,14 +107,16 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	var allBlindings [][32]byte
 	var allAmounts []uint64
 
+	var txPrivKey [32]byte // stored for payment ID encryption
 	for i, r := range recipients {
-		_, txPub, oneTimePub, err := b.config.DeriveStealthAddress(r.SpendPubKey, r.ViewPubKey)
+		txPriv, txPub, oneTimePub, err := b.config.DeriveStealthAddress(r.SpendPubKey, r.ViewPubKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive stealth address for recipient %d: %w", i, err)
 		}
 
 		if i == 0 {
-			txPubKey = txPub // Use first derivation's tx pubkey
+			txPubKey = txPub   // Use first derivation's tx pubkey
+			txPrivKey = txPriv // Keep for payment ID encryption
 		}
 
 		blinding := b.config.GenerateBlinding()
@@ -226,6 +229,7 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	return &TransferResult{
 		TxData:       txData,
 		TxID:         txID,
+		TxPrivKey:    txPrivKey,
 		SpentOutputs: inputs,
 		Fee:          fee,
 		Change:       change,

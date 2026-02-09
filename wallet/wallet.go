@@ -42,19 +42,21 @@ type OwnedOutput struct {
 	OneTimePubKey  [32]byte `json:"one_time_pub"`
 	Commitment     [32]byte `json:"commitment"`
 	BlockHeight    uint64   `json:"block_height"`
-	IsCoinbase     bool     `json:"is_coinbase"` // True if from mining reward
+	IsCoinbase     bool     `json:"is_coinbase"`               // True if from mining reward
 	Spent          bool     `json:"spent"`
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
+	PaymentID      []byte   `json:"payment_id,omitempty"`      // Decrypted payment ID (up to 8 bytes)
 }
 
 // SendRecord tracks outgoing transaction details
 type SendRecord struct {
 	TxID        [32]byte `json:"txid"`
 	Timestamp   int64    `json:"timestamp"`
-	Recipient   string   `json:"recipient"`   // base58 address
-	Amount      uint64   `json:"amount"`      // actual amount sent (not including fee)
+	Recipient   string   `json:"recipient"`              // base58 address
+	Amount      uint64   `json:"amount"`                 // actual amount sent (not including fee)
 	Fee         uint64   `json:"fee"`
-	BlockHeight uint64   `json:"block_height"` // when confirmed
+	BlockHeight uint64   `json:"block_height"`           // when confirmed
+	PaymentID   []byte   `json:"payment_id,omitempty"`   // Payment ID used (plaintext)
 }
 
 // WalletData is the serializable wallet state

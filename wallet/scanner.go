@@ -12,6 +12,9 @@ import (
 type BlockData struct {
 	Height       uint64
 	Transactions []TxData
+	// PaymentIDs maps "txIdx:outIdx" to encrypted payment ID bytes.
+	// Populated from BlockAuxData when available.
+	PaymentIDs map[string][8]byte
 }
 
 // TxData is the minimal tx info needed for scanning
@@ -54,7 +57,7 @@ func NewScanner(w *Wallet, cfg ScannerConfig) *Scanner {
 func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 	keys := s.wallet.Keys()
 
-	for _, tx := range block.Transactions {
+	for txIdx, tx := range block.Transactions {
 		// Check each output - is it ours?
 		for _, out := range tx.Outputs {
 			if s.wallet.checkStealthOutput(tx.TxPubKey, out.PubKey, keys.ViewPrivKey, keys.SpendPubKey) {
@@ -80,20 +83,28 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 				// Verify commitment: amount * H + blinding * G should equal out.Commitment
 				// This is done by the wallet when spending, but we trust the network validated it
 
-				owned := &OwnedOutput{
-					TxID:           tx.TxID,
-					OutputIndex:    out.Index,
-					Amount:         amount,
-					Blinding:       blinding,
-					OneTimePrivKey: oneTimePriv,
-					OneTimePubKey:  out.PubKey,
-					Commitment:     out.Commitment,
-					BlockHeight:    block.Height,
-					IsCoinbase:     tx.IsCoinbase,
-					Spent:          false,
-				}
+			owned := &OwnedOutput{
+				TxID:           tx.TxID,
+				OutputIndex:    out.Index,
+				Amount:         amount,
+				Blinding:       blinding,
+				OneTimePrivKey: oneTimePriv,
+				OneTimePubKey:  out.PubKey,
+				Commitment:     out.Commitment,
+				BlockHeight:    block.Height,
+				IsCoinbase:     tx.IsCoinbase,
+				Spent:          false,
+			}
 
-				s.wallet.AddOutput(owned)
+			// Decrypt payment ID if present in block aux data
+			if block.PaymentIDs != nil {
+				auxKey := fmt.Sprintf("%d:%d", txIdx, out.Index)
+				if encPID, ok := block.PaymentIDs[auxKey]; ok {
+					owned.PaymentID = DecryptPaymentID(encPID, outputSecret)
+				}
+			}
+
+			s.wallet.AddOutput(owned)
 				found++
 			}
 		}
@@ -147,6 +158,54 @@ func deriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
 	// The hash output is already 32 bytes, which is fine for this purpose
 	// as the Rust side handles canonical reduction
 	return blinding
+}
+
+// EncryptPaymentID encrypts a payment ID using the ECDH shared secret.
+// XORs the payment ID with bytes derived from the shared secret.
+func EncryptPaymentID(paymentID []byte, sharedSecret [32]byte) [8]byte {
+	// Derive payment ID mask from shared secret
+	h := sha3.New256()
+	h.Write([]byte("blocknet_payment_id"))
+	h.Write(sharedSecret[:])
+	mask := h.Sum(nil)
+
+	var encrypted [8]byte
+	for i := 0; i < 8 && i < len(paymentID); i++ {
+		encrypted[i] = paymentID[i] ^ mask[i]
+	}
+	// XOR is symmetric — if paymentID is shorter than 8, remaining bytes
+	// are just mask bytes, which the recipient will XOR back to zero.
+	return encrypted
+}
+
+// DecryptPaymentID decrypts an encrypted payment ID using the ECDH shared secret.
+// Returns nil if the decrypted result is all zeros (no payment ID).
+func DecryptPaymentID(encrypted [8]byte, sharedSecret [32]byte) []byte {
+	h := sha3.New256()
+	h.Write([]byte("blocknet_payment_id"))
+	h.Write(sharedSecret[:])
+	mask := h.Sum(nil)
+
+	var decrypted [8]byte
+	allZero := true
+	for i := 0; i < 8; i++ {
+		decrypted[i] = encrypted[i] ^ mask[i]
+		if decrypted[i] != 0 {
+			allZero = false
+		}
+	}
+	if allZero {
+		return nil
+	}
+
+	// Trim trailing zero bytes
+	end := 8
+	for end > 0 && decrypted[end-1] == 0 {
+		end--
+	}
+	result := make([]byte, end)
+	copy(result, decrypted[:end])
+	return result
 }
 
 // BlockToScanData converts a serialized block to scanner format

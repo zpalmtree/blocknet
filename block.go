@@ -129,10 +129,20 @@ func (h *BlockHeader) SerializeForPoW() []byte {
 // Block
 // ============================================================================
 
+// BlockAuxData holds auxiliary per-output data that is NOT part of the
+// block hash or merkle root.  This allows adding metadata (like encrypted
+// payment IDs) without changing consensus rules or requiring a hard fork.
+// Old nodes silently ignore the unknown JSON field.
+type BlockAuxData struct {
+	// PaymentIDs maps "txIdx:outIdx" to an 8-byte encrypted payment ID.
+	PaymentIDs map[string][8]byte `json:"payment_ids,omitempty"`
+}
+
 // Block represents a complete block with header and transactions
 type Block struct {
-	Header       BlockHeader
-	Transactions []*Transaction
+	Header       BlockHeader    `json:"header"`
+	Transactions []*Transaction `json:"transactions"`
+	AuxData      *BlockAuxData  `json:"aux_data,omitempty"`
 }
 
 // Hash returns the block hash (header hash)

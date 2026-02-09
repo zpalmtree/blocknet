@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/signal"
@@ -428,7 +429,7 @@ Commands:%s
   status            Show node and wallet status
   balance           Show wallet balance
   address           Show receiving address
-  send <addr> <amt> Send funds to address%s
+  send <addr> <amt> [pid] Send funds (pid = payment ID hex)%s
   history           Show transaction history
   peers             List connected peers
   banned            List banned peers
@@ -526,7 +527,20 @@ func (c *CLI) cmdSend(args []string) error {
 	}
 
 	if len(args) < 2 {
-		return fmt.Errorf("usage: send <address> <amount>")
+		return fmt.Errorf("usage: send <address> <amount> [payment_id]")
+	}
+
+	// Parse optional payment ID (up to 16 hex chars = 8 bytes)
+	var paymentID []byte
+	if len(args) >= 3 {
+		pid, err := hex.DecodeString(args[2])
+		if err != nil {
+			return fmt.Errorf("invalid payment_id: must be hex")
+		}
+		if len(pid) > 8 {
+			return fmt.Errorf("payment_id too long: max 16 hex characters (8 bytes)")
+		}
+		paymentID = pid
 	}
 
 	// Parse recipient address (strip control characters from copy-paste)
@@ -582,8 +596,23 @@ func (c *CLI) cmdSend(args []string) error {
 		return fmt.Errorf("failed to build transaction: %w", err)
 	}
 
+	// Encrypt payment ID if provided
+	var txAux *TxAuxData
+	if len(paymentID) > 0 {
+		// Derive the shared secret using sender-side ECDH: txPriv * viewPub
+		// Recipient will derive the same secret via viewPriv * txPub
+		sharedSecret, err := DeriveStealthSecretSender(result.TxPrivKey, viewPub)
+		if err != nil {
+			return fmt.Errorf("failed to derive shared secret for payment ID: %w", err)
+		}
+		encPID := wallet.EncryptPaymentID(paymentID, sharedSecret)
+		txAux = &TxAuxData{
+			PaymentIDs: map[int][8]byte{0: encPID}, // output index 0 = recipient
+		}
+	}
+
 	// Submit to mempool via Dandelion++
-	if err := c.daemon.SubmitTransaction(result.TxData); err != nil {
+	if err := c.daemon.SubmitTransaction(result.TxData, txAux); err != nil {
 		return fmt.Errorf("failed to submit transaction: %w", err)
 	}
 
@@ -600,6 +629,7 @@ func (c *CLI) cmdSend(args []string) error {
 		Amount:      amount,
 		Fee:         result.Fee,
 		BlockHeight: c.daemon.Chain().Height(),
+		PaymentID:   paymentID,
 	})
 
 	fmt.Printf("Transaction sent: %x\n", result.TxID[:16])
@@ -639,6 +669,7 @@ func (c *CLI) cmdHistory() {
 		height    uint64
 		color     string
 		txHash    [32]byte
+		paymentID []byte
 	}
 
 	var events []historyEvent
@@ -656,6 +687,7 @@ func (c *CLI) cmdHistory() {
 			height:    out.BlockHeight,
 			color:     green,
 			txHash:    out.TxID,
+			paymentID: out.PaymentID,
 		})
 	}
 
@@ -671,14 +703,15 @@ func (c *CLI) cmdHistory() {
 				if block == nil {
 					continue
 				}
-				events = append(events, historyEvent{
-					timestamp: block.Header.Timestamp,
-					direction: "OUT",
-					amount:    sendRecord.Amount, // Use actual sent amount
-					height:    out.SpentHeight,
-					color:     red,
-					txHash:    out.TxID,
-				})
+			events = append(events, historyEvent{
+				timestamp: block.Header.Timestamp,
+				direction: "OUT",
+				amount:    sendRecord.Amount, // Use actual sent amount
+				height:    out.SpentHeight,
+				color:     red,
+				txHash:    out.TxID,
+				paymentID: sendRecord.PaymentID,
+			})
 				seenTxIDs[out.TxID] = true
 			}
 		}
@@ -693,21 +726,25 @@ func (c *CLI) cmdHistory() {
 	for _, evt := range events {
 		tm := time.Unix(evt.timestamp, 0)
 		dateStr := tm.Format("060102-15:04:05")
-
-		// Format: YYMMDD-HH:mm:ss DIR (color) NN.NN txhash
+		
 		amountStr := formatAmount(evt.amount)
 		if evt.amount == 0 && evt.direction == "OUT" {
-			// Unknown amount for old transactions without send metadata
 			amountStr = "??? BNT"
 		}
+		
+		pidStr := ""
+		if len(evt.paymentID) > 0 {
+			pidStr = " " + hex.EncodeToString(evt.paymentID)
+		}
 
-		fmt.Printf("%s %s%-3s%s %-16s %x\n",
+		fmt.Printf("%s %s%-3s%s %-16s %x%s\n",
 			dateStr,
 			evt.color,
 			evt.direction,
 			reset,
 			amountStr,
 			evt.txHash,
+			pidStr,
 		)
 	}
 }
@@ -1197,6 +1234,11 @@ func blockToScanData(block *Block) *wallet.BlockData {
 	data := &wallet.BlockData{
 		Height:       block.Header.Height,
 		Transactions: make([]wallet.TxData, len(block.Transactions)),
+	}
+
+	// Pass through payment IDs from block aux data
+	if block.AuxData != nil && len(block.AuxData.PaymentIDs) > 0 {
+		data.PaymentIDs = block.AuxData.PaymentIDs
 	}
 
 	for i, tx := range block.Transactions {

@@ -200,7 +200,7 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outputs := s.wallet.SpendableOutputs()
+	outputs := s.wallet.AllOutputs()
 
 	type outputEntry struct {
 		TxID        string `json:"txid"`
@@ -210,6 +210,7 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		IsCoinbase  bool   `json:"is_coinbase"`
 		Spent       bool   `json:"spent"`
 		SpentHeight uint64 `json:"spent_height,omitempty"`
+		PaymentID   string `json:"payment_id,omitempty"`
 	}
 
 	entries := make([]outputEntry, len(outputs))
@@ -222,6 +223,9 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 			IsCoinbase:  out.IsCoinbase,
 			Spent:       out.Spent,
 			SpentHeight: out.SpentHeight,
+		}
+		if len(out.PaymentID) > 0 {
+			entries[i].PaymentID = hex.EncodeToString(out.PaymentID)
 		}
 	}
 
@@ -243,8 +247,9 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Address string `json:"address"`
-		Amount  uint64 `json:"amount"` // atomic units
+		Address   string `json:"address"`
+		Amount    uint64 `json:"amount"`     // atomic units
+		PaymentID string `json:"payment_id"` // optional hex-encoded payment ID (up to 16 chars)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -287,8 +292,34 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse optional payment ID
+	var paymentID []byte
+	var txAux *TxAuxData
+	if req.PaymentID != "" {
+		pid, err := hex.DecodeString(req.PaymentID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid payment_id: must be hex")
+			return
+		}
+		if len(pid) > 8 {
+			writeError(w, http.StatusBadRequest, "payment_id too long: max 16 hex characters")
+			return
+		}
+		paymentID = pid
+
+		sharedSecret, err := DeriveStealthSecretSender(result.TxPrivKey, viewPub)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to derive shared secret")
+			return
+		}
+		encPID := wallet.EncryptPaymentID(paymentID, sharedSecret)
+		txAux = &TxAuxData{
+			PaymentIDs: map[int][8]byte{0: encPID},
+		}
+	}
+
 	// Submit via Dandelion++
-	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
+	if err := s.daemon.SubmitTransaction(result.TxData, txAux); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit transaction: "+err.Error())
 		return
 	}
@@ -297,13 +328,28 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	for _, spent := range result.SpentOutputs {
 		s.wallet.MarkSpent(spent.OneTimePubKey, height)
 	}
+
+	// Record send for history
+	s.wallet.RecordSend(&wallet.SendRecord{
+		TxID:        result.TxID,
+		Timestamp:   time.Now().Unix(),
+		Recipient:   addr,
+		Amount:      req.Amount,
+		Fee:         result.Fee,
+		BlockHeight: height,
+		PaymentID:   paymentID,
+	})
 	s.wallet.Save()
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"txid":   fmt.Sprintf("%x", result.TxID),
 		"fee":    result.Fee,
 		"change": result.Change,
-	})
+	}
+	if len(paymentID) > 0 {
+		resp["payment_id"] = hex.EncodeToString(paymentID)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleLock locks the wallet.
