@@ -163,6 +163,13 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		ProcessHeader:     nil, // Full-block sync, no header processing
 		GetMempool:        d.getMempoolTxs,
 		ProcessTx:         d.processTxData,
+		OnBlockAccepted: func(data []byte) {
+			d.miner.NotifyNewBlock()
+			var block Block
+			if err := json.Unmarshal(data, &block); err == nil {
+				d.notifyBlock(&block)
+			}
+		},
 	}
 	d.syncMgr = p2p.NewSyncManager(node, syncCfg)
 

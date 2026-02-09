@@ -251,6 +251,7 @@ func (n *Node) registerProtocols() {
 // handleBlockStream handles incoming block announcements
 func (n *Node) handleBlockStream(s network.Stream) {
 	defer s.Close()
+	s.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	// Read block data
 	data, err := readLengthPrefixed(s)
@@ -270,6 +271,7 @@ func (n *Node) handleBlockStream(s network.Stream) {
 // handleTxStream handles incoming transaction announcements (fluff phase)
 func (n *Node) handleTxStream(s network.Stream) {
 	defer s.Close()
+	s.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	data, err := readLengthPrefixed(s)
 	if err != nil {

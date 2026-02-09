@@ -89,6 +89,7 @@ type SyncManager struct {
 	processHeader     func(data []byte) error
 	getMempool        func() [][]byte
 	processTx         func(data []byte) error
+	onBlockAccepted   func(data []byte)
 
 	// Sync state
 	syncing        bool
@@ -112,6 +113,7 @@ type SyncConfig struct {
 	ProcessHeader     func(data []byte) error
 	GetMempool        func() [][]byte         // Get all mempool transactions
 	ProcessTx         func(data []byte) error // Process a mempool transaction
+	OnBlockAccepted   func(data []byte)       // Called when a new block announcement is accepted
 }
 
 // NewSyncManager creates a new sync manager
@@ -126,6 +128,7 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		processHeader:     cfg.ProcessHeader,
 		getMempool:        cfg.GetMempool,
 		processTx:         cfg.ProcessTx,
+		onBlockAccepted:   cfg.OnBlockAccepted,
 		downloadBuffer:    make(map[uint64][]byte),
 	}
 }
@@ -151,6 +154,7 @@ func (sm *SyncManager) Stop() {
 // HandleStream handles incoming sync protocol streams
 func (sm *SyncManager) HandleStream(s network.Stream) {
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(60 * time.Second))
 
 	msgType, data, err := readMessage(s)
 	if err != nil {
@@ -259,6 +263,10 @@ func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 		if err := sm.processBlock(data); err != nil {
 			return // Don't relay invalid blocks
 		}
+		// Notify daemon (miner restart, wallet subscribers)
+		if sm.onBlockAccepted != nil {
+			sm.onBlockAccepted(data)
+		}
 		// Relay to other peers (exclude sender)
 		sm.relayBlock(from, data)
 	}
@@ -343,16 +351,33 @@ func (sm *SyncManager) checkSync() {
 
 	ourStatus := sm.getStatus()
 
-	// Query status from all peers
-	var peerStatuses []PeerStatus
-
+	// Query status from all peers concurrently
+	type statusResult struct {
+		ps  PeerStatus
+		err error
+	}
+	resultCh := make(chan statusResult, len(peers))
 	for _, p := range peers {
-		status, err := sm.getStatusFrom(p)
-		if err != nil {
-			// log.Printf("[sync] failed to get status from %s: %v", p.String()[:16], err)
-			continue
+		go func(pid peer.ID) {
+			status, err := sm.getStatusFrom(pid)
+			resultCh <- statusResult{ps: PeerStatus{Peer: pid, Status: status}, err: err}
+		}(p)
+	}
+
+	var peerStatuses []PeerStatus
+	statusTimeout := time.After(15 * time.Second)
+collectStatuses:
+	for i := 0; i < len(peers); i++ {
+		select {
+		case r := <-resultCh:
+			if r.err == nil {
+				peerStatuses = append(peerStatuses, r.ps)
+			}
+		case <-statusTimeout:
+			break collectStatuses
+		case <-sm.ctx.Done():
+			return
 		}
-		peerStatuses = append(peerStatuses, PeerStatus{Peer: p, Status: status})
 	}
 
 	if len(peerStatuses) == 0 {
@@ -403,6 +428,7 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 		return ChainStatus{}, err
 	}
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Send our status
 	ourStatus := sm.getStatus()
@@ -541,9 +567,23 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 					}
 				case <-ctx.Done():
 					return
-				case <-time.After(180 * time.Second):
-					// log.Printf("[sync] timeout waiting for block %d", nextHeight)
+			case <-time.After(30 * time.Second):
+				// Downloader may have failed - try direct fetch from any peer
+				var fetched bool
+				for _, ps := range peers {
+					if ctx.Err() != nil {
+						return
+					}
+					blocks, fetchErr := sm.fetchBlocksByHeight(ps.Peer, nextHeight, 1)
+					if fetchErr == nil && len(blocks) > 0 {
+						blockData = blocks[0]
+						fetched = true
+						break
+					}
+				}
+				if !fetched {
 					return
+				}
 				}
 			}
 
@@ -653,6 +693,7 @@ func (sm *SyncManager) fetchHeaders(p peer.ID, startHeight uint64, max int) ([][
 		return nil, err
 	}
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(60 * time.Second))
 
 	// Send request
 	req := HeadersRequest{
@@ -692,6 +733,7 @@ func (sm *SyncManager) FetchBlocks(p peer.ID, hashes [][32]byte) ([][]byte, erro
 		return nil, err
 	}
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(120 * time.Second))
 
 	req := BlocksRequest{Hashes: hashes}
 	reqData, _ := json.Marshal(req)
@@ -726,6 +768,7 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 		return nil, err
 	}
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(120 * time.Second))
 
 	req := BlocksByHeightRequest{
 		StartHeight: startHeight,
@@ -802,6 +845,7 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 		return err
 	}
 	defer s.Close()
+	s.SetDeadline(time.Now().Add(60 * time.Second))
 
 	// Request mempool
 	if err := writeMessage(s, SyncMsgGetMempool, []byte{}); err != nil {
