@@ -614,17 +614,17 @@ func (c *CLI) cmdSend(args []string) error {
 func (c *CLI) cmdHistory() {
 	// Get all outputs (both spent and unspent)
 	outputs := c.wallet.AllOutputs()
-	
+
 	if len(outputs) == 0 {
 		fmt.Println("No transaction history")
 		return
 	}
 
 	// Color codes
-	green := "\033[38;2;170;255;0m"   // #AAFF00 - incoming
-	red := "\033[38;2;255;68;68m"     // #FF4444 - outgoing
+	green := "\033[38;2;170;255;0m" // #AAFF00 - incoming
+	red := "\033[38;2;255;68;68m"   // #FF4444 - outgoing
 	reset := "\033[0m"
-	
+
 	if c.noColor {
 		green = ""
 		red = ""
@@ -693,14 +693,14 @@ func (c *CLI) cmdHistory() {
 	for _, evt := range events {
 		tm := time.Unix(evt.timestamp, 0)
 		dateStr := tm.Format("060102-15:04:05")
-		
+
 		// Format: YYMMDD-HH:mm:ss DIR (color) NN.NN txhash
 		amountStr := formatAmount(evt.amount)
 		if evt.amount == 0 && evt.direction == "OUT" {
 			// Unknown amount for old transactions without send metadata
 			amountStr = "??? BNT"
 		}
-		
+
 		fmt.Printf("%s %s%-3s%s %-16s %x\n",
 			dateStr,
 			evt.color,
