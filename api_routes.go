@@ -32,6 +32,9 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/mining/stop", s.handleMiningStop)
 	mux.HandleFunc("POST /api/mining/threads", s.handleMiningThreads)
 
+	// Dangerous operations
+	mux.HandleFunc("POST /api/purge", s.handlePurgeData)
+
 	// SSE
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 }

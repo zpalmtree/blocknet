@@ -33,6 +33,7 @@ type CLI struct {
 	noColor    bool
 	api        *APIServer
 	apiAddr    string
+	dataDir    string
 }
 
 // CLIConfig holds CLI configuration
@@ -73,6 +74,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		startTime:  time.Now(),
 		daemonMode: cfg.DaemonMode,
 		noColor:    cfg.NoColor,
+		dataDir:    cfg.DataDir,
 	}
 
 	// Check if wallet exists
@@ -412,6 +414,8 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdUnlock()
 	case "save":
 		return c.cmdSave()
+	case "purge":
+		return c.cmdPurgeData()
 	case "quit", "exit":
 		return fmt.Errorf("quit")
 	default:
@@ -444,6 +448,7 @@ Commands:%s
   lock              Lock wallet
   unlock            Unlock wallet
   save              Save wallet to disk
+  purge             Delete all blockchain data (cannot be undone)
   quit              Exit (saves automatically)
 `, viewOnlyNote, func() string {
 		if c.wallet.IsViewOnly() {
@@ -896,7 +901,7 @@ func (c *CLI) cmdSync() {
 }
 
 func (c *CLI) cmdSeed() error {
-	fmt.Println("\n⚠️  WARNING: Your recovery seed controls all funds!")
+	fmt.Println("\nWARNING: Your recovery seed controls all funds!")
 	fmt.Println("Anyone with this seed can steal your coins.")
 	fmt.Println("Never share it, never enter it online.")
 	fmt.Print("\nShow recovery seed? [y/N]: ")
@@ -941,7 +946,7 @@ func (c *CLI) cmdViewKeys() error {
 		return fmt.Errorf("this is already a view-only wallet")
 	}
 
-	fmt.Println("\n⚠️  WARNING: View-only keys allow monitoring all incoming funds!")
+	fmt.Println("\nWARNING: View-only keys allow monitoring all incoming funds!")
 	fmt.Println("Anyone with these keys can see your balance and transaction history.")
 	fmt.Println("They CANNOT spend your funds.")
 	fmt.Print("\nExport view-only keys? [y/N]: ")
@@ -1004,6 +1009,36 @@ func (c *CLI) cmdSave() error {
 	}
 	fmt.Println("Wallet saved")
 	return nil
+}
+
+func (c *CLI) cmdPurgeData() error {
+	fmt.Printf("\nWARNING: This will delete all blockchain data from %s\n", c.dataDir)
+	fmt.Println("This includes all blocks, chain state, and sync progress.")
+	fmt.Println("Your wallet will NOT be deleted.")
+	fmt.Println("This action CANNOT be undone.")
+	fmt.Print("\nConfirm purge? [y/N]: ")
+
+	confirm, _ := c.reader.ReadString('\n')
+	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+		fmt.Println("Cancelled")
+		return nil
+	}
+
+	// Stop daemon first to release database locks
+	fmt.Println("Stopping daemon...")
+	c.daemon.Stop()
+
+	// Remove data directory
+	fmt.Printf("Purging blockchain data from %s...\n", c.dataDir)
+	if err := os.RemoveAll(c.dataDir); err != nil {
+		return fmt.Errorf("failed to purge blockchain data: %w", err)
+	}
+
+	fmt.Println("Blockchain data purged successfully")
+	fmt.Println("Restart the application to resync from genesis")
+
+	// Exit after purge since daemon is stopped
+	return fmt.Errorf("quit")
 }
 
 func (c *CLI) shutdown() error {

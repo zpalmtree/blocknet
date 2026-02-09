@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -505,6 +506,55 @@ func (s *APIServer) handleMiningThreads(w http.ResponseWriter, r *http.Request) 
 
 	s.daemon.Miner().SetThreads(req.Threads)
 	writeJSON(w, http.StatusOK, map[string]any{"threads": s.daemon.Miner().Threads()})
+}
+
+// ============================================================================
+// Dangerous operations
+// ============================================================================
+
+// handlePurgeData deletes all blockchain data from disk.
+// POST /api/purge
+func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Password string `json:"password"`
+		Confirm  bool   `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	// Require password verification
+	if subtle.ConstantTimeCompare([]byte(req.Password), s.password) != 1 {
+		writeError(w, http.StatusUnauthorized, "incorrect password")
+		return
+	}
+
+	// Require explicit confirmation
+	if !req.Confirm {
+		writeError(w, http.StatusBadRequest, "confirmation required (set confirm: true)")
+		return
+	}
+
+	// Stop daemon first to release database locks
+	s.daemon.Stop()
+
+	// Remove data directory
+	if err := os.RemoveAll(s.dataDir); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to purge blockchain data: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "blockchain data purged successfully, restart required",
+	})
+
+	// Shut down the API server since daemon is stopped
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		s.Stop()
+	}()
 }
 
 // ============================================================================
