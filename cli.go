@@ -485,9 +485,9 @@ Wallet Status:
   Balance:     %s
   Outputs:     %d unspent / %d total
   Synced To:   %d
-  Address:     %s...
+  Address:     %s
 `,
-		stats.PeerID[:16]+"...",
+		stats.PeerID,
 		stats.Peers,
 		stats.ChainHeight,
 		stats.BestHash,
@@ -497,7 +497,7 @@ Wallet Status:
 		balanceStr,
 		unspent, total,
 		c.wallet.SyncedHeight(),
-		c.wallet.Address()[:32],
+		c.wallet.Address(),
 	)
 }
 
