@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,6 +35,8 @@ type CLI struct {
 	api        *APIServer
 	apiAddr    string
 	dataDir    string
+	walletFile string
+	mu         sync.RWMutex // protects wallet/scanner/password during hot-load
 }
 
 // CLIConfig holds CLI configuration
@@ -63,6 +66,57 @@ func DefaultCLIConfig() CLIConfig {
 	}
 }
 
+// defaultWalletConfig returns the wallet config with crypto callbacks.
+func defaultWalletConfig() wallet.WalletConfig {
+	return wallet.WalletConfig{
+		GenerateStealthKeys: func() (*wallet.StealthKeys, error) {
+			keys, err := GenerateStealthKeys()
+			if err != nil {
+				return nil, err
+			}
+			return &wallet.StealthKeys{
+				SpendPrivKey: keys.SpendPrivKey,
+				SpendPubKey:  keys.SpendPubKey,
+				ViewPrivKey:  keys.ViewPrivKey,
+				ViewPubKey:   keys.ViewPubKey,
+			}, nil
+		},
+		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
+			output, err := DeriveStealthAddress(spendPub, viewPub)
+			if err != nil {
+				return txPriv, txPub, oneTimePub, err
+			}
+			return output.TxPrivKey, output.TxPubKey, output.OnetimePubKey, nil
+		},
+		CheckStealthOutput: func(txPub, outputPub, viewPriv, spendPub [32]byte) bool {
+			return CheckStealthOutput(spendPub, viewPriv, txPub, outputPub)
+		},
+		DeriveSpendKey: func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error) {
+			return DeriveStealthSpendKey(txPub, viewPriv, spendPriv)
+		},
+		DeriveOutputSecret: func(txPub, viewPriv [32]byte) ([32]byte, error) {
+			return DeriveStealthSecret(txPub, viewPriv)
+		},
+		GenerateKeypairFromSeed: func(seed [32]byte) (priv, pub [32]byte, err error) {
+			kp, err := GenerateRistrettoKeypairFromSeed(seed)
+			if err != nil {
+				return priv, pub, err
+			}
+			return kp.PrivateKey, kp.PublicKey, nil
+		},
+	}
+}
+
+// defaultScannerConfig returns the scanner config with crypto callbacks.
+func defaultScannerConfig() wallet.ScannerConfig {
+	return wallet.ScannerConfig{
+		GenerateKeyImage: GenerateKeyImage,
+		CreateCommitment: func(amount uint64, blinding [32]byte) ([32]byte, error) {
+			return CreatePedersenCommitmentWithBlinding(amount, blinding)
+		},
+	}
+}
+
 // NewCLI creates and initializes the CLI
 func NewCLI(cfg CLIConfig) (*CLI, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -75,7 +129,36 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		daemonMode: cfg.DaemonMode,
 		noColor:    cfg.NoColor,
 		dataDir:    cfg.DataDir,
+		walletFile: cfg.WalletFile,
 	}
+
+	// Create daemon config (shared by both modes)
+	daemonCfg := DaemonConfig{
+		DataDir:      cfg.DataDir,
+		ListenAddrs:  cfg.ListenAddrs,
+		SeedNodes:    cfg.SeedNodes,
+		ExplorerAddr: cfg.ExplorerAddr,
+	}
+
+	// Daemon mode: start without a wallet, user loads one via API
+	if cfg.DaemonMode {
+		daemon, err := NewDaemon(daemonCfg, nil)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("daemon error: %w", err)
+		}
+		cli.daemon = daemon
+
+		if cfg.APIAddr != "" {
+			cli.api = NewAPIServer(daemon, nil, nil, cfg.DataDir, nil)
+			cli.api.cli = cli
+			cli.apiAddr = cfg.APIAddr
+		}
+
+		return cli, nil
+	}
+
+	// Interactive mode: prompt for password and load wallet
 
 	// Check if wallet exists
 	walletExists := fileExists(cfg.WalletFile)
@@ -135,49 +218,11 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	}
 	cli.password = password
 
-	// Create wallet config with crypto callbacks
-	walletCfg := wallet.WalletConfig{
-		GenerateStealthKeys: func() (*wallet.StealthKeys, error) {
-			keys, err := GenerateStealthKeys()
-			if err != nil {
-				return nil, err
-			}
-			return &wallet.StealthKeys{
-				SpendPrivKey: keys.SpendPrivKey,
-				SpendPubKey:  keys.SpendPubKey,
-				ViewPrivKey:  keys.ViewPrivKey,
-				ViewPubKey:   keys.ViewPubKey,
-			}, nil
-		},
-		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
-			output, err := DeriveStealthAddress(spendPub, viewPub)
-			if err != nil {
-				return txPriv, txPub, oneTimePub, err
-			}
-			return output.TxPrivKey, output.TxPubKey, output.OnetimePubKey, nil
-		},
-		CheckStealthOutput: func(txPub, outputPub, viewPriv, spendPub [32]byte) bool {
-			return CheckStealthOutput(spendPub, viewPriv, txPub, outputPub)
-		},
-		DeriveSpendKey: func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error) {
-			return DeriveStealthSpendKey(txPub, viewPriv, spendPriv)
-		},
-		DeriveOutputSecret: func(txPub, viewPriv [32]byte) ([32]byte, error) {
-			return DeriveStealthSecret(txPub, viewPriv)
-		},
-		GenerateKeypairFromSeed: func(seed [32]byte) (priv, pub [32]byte, err error) {
-			kp, err := GenerateRistrettoKeypairFromSeed(seed)
-			if err != nil {
-				return priv, pub, err
-			}
-			return kp.PrivateKey, kp.PublicKey, nil
-		},
-	}
+	walletCfg := defaultWalletConfig()
 
 	// Load, create, or recover wallet
 	var w *wallet.Wallet
 	if recoverMnemonic != "" {
-		// Recovery mode: create new wallet from mnemonic
 		w, err = wallet.NewWalletFromMnemonic(cfg.WalletFile, password, recoverMnemonic, walletCfg)
 		if err != nil {
 			cancel()
@@ -193,20 +238,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		}
 	}
 	cli.wallet = w
-	cli.scanner = wallet.NewScanner(w, wallet.ScannerConfig{
-		GenerateKeyImage: GenerateKeyImage,
-		CreateCommitment: func(amount uint64, blinding [32]byte) ([32]byte, error) {
-			return CreatePedersenCommitmentWithBlinding(amount, blinding)
-		},
-	})
-
-	// Create daemon config
-	daemonCfg := DaemonConfig{
-		DataDir:      cfg.DataDir,
-		ListenAddrs:  cfg.ListenAddrs,
-		SeedNodes:    cfg.SeedNodes,
-		ExplorerAddr: cfg.ExplorerAddr,
-	}
+	cli.scanner = wallet.NewScanner(w, defaultScannerConfig())
 
 	// Create daemon with wallet's stealth keys for mining rewards
 	daemon, err := NewDaemon(daemonCfg, &StealthKeys{
@@ -224,6 +256,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	// Create API server if --api is set
 	if cfg.APIAddr != "" {
 		cli.api = NewAPIServer(daemon, w, cli.scanner, cfg.DataDir, password)
+		cli.api.cli = cli
 		cli.apiAddr = cfg.APIAddr
 	}
 
@@ -250,13 +283,15 @@ func (c *CLI) Run() error {
 	}
 
 	// Check if wallet is ahead of chain (chain was reset/reorged)
-	chainHeight := c.daemon.Chain().Height()
-	walletHeight := c.wallet.SyncedHeight()
-	if walletHeight > chainHeight {
-		removed := c.wallet.RewindToHeight(chainHeight)
-		if removed > 0 {
-			fmt.Printf("Chain reset detected: removed %d orphaned outputs, rewound wallet to height %d\n", removed, chainHeight)
-			c.wallet.Save()
+	if c.wallet != nil {
+		chainHeight := c.daemon.Chain().Height()
+		walletHeight := c.wallet.SyncedHeight()
+		if walletHeight > chainHeight {
+			removed := c.wallet.RewindToHeight(chainHeight)
+			if removed > 0 {
+				fmt.Printf("Chain reset detected: removed %d orphaned outputs, rewound wallet to height %d\n", removed, chainHeight)
+				c.wallet.Save()
+			}
 		}
 	}
 
@@ -1047,9 +1082,11 @@ func (c *CLI) shutdown() error {
 		c.api.Stop()
 	}
 
-	fmt.Println("Saving wallet...")
-	if err := c.wallet.Save(); err != nil {
-		fmt.Printf("Warning: failed to save wallet: %v\n", err)
+	if c.wallet != nil {
+		fmt.Println("Saving wallet...")
+		if err := c.wallet.Save(); err != nil {
+			fmt.Printf("Warning: failed to save wallet: %v\n", err)
+		}
 	}
 
 	fmt.Println("Stopping daemon...")
@@ -1231,10 +1268,20 @@ func (c *CLI) autoScanBlocks() {
 			if block == nil {
 				continue
 			}
+
+			c.mu.RLock()
+			scanner := c.scanner
+			w := c.wallet
+			c.mu.RUnlock()
+
+			if scanner == nil {
+				continue
+			}
+
 			blockData := blockToScanData(block)
-			found, spent := c.scanner.ScanBlock(blockData)
+			found, spent := scanner.ScanBlock(blockData)
 			if found > 0 || spent > 0 {
-				c.wallet.Save()
+				w.Save()
 			}
 		}
 	}

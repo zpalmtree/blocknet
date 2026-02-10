@@ -68,6 +68,13 @@ func NewMiner(chain *Chain, mempool *Mempool, config MinerConfig) *Miner {
 	}
 }
 
+// SetRewardKeys updates the mining reward destination keys.
+// Call this after loading a wallet so mined blocks pay to the wallet.
+func (m *Miner) SetRewardKeys(spendPub, viewPub [32]byte) {
+	m.config.MinerSpendPub = spendPub
+	m.config.MinerViewPub = viewPub
+}
+
 // NotifyNewBlock tells the miner a new block arrived so it should
 // abandon the current stale solve and rebuild against the new tip.
 func (m *Miner) NotifyNewBlock() {

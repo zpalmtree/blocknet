@@ -396,6 +396,79 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"locked": false})
 }
 
+// handleLoadWallet loads (or creates) a wallet at runtime.
+// Used in daemon mode where the app starts without a wallet.
+// POST /api/wallet/load
+func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
+	if s.wallet != nil {
+		writeError(w, http.StatusConflict, "wallet already loaded")
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Password) < 3 {
+		writeError(w, http.StatusBadRequest, "password must be at least 3 characters")
+		return
+	}
+
+	password := []byte(req.Password)
+	wl, err := wallet.LoadOrCreateWallet(s.cli.walletFile, password, defaultWalletConfig())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load wallet: "+err.Error())
+		return
+	}
+
+	scanner := wallet.NewScanner(wl, defaultScannerConfig())
+
+	// Point miner rewards at this wallet
+	s.daemon.Miner().SetRewardKeys(wl.Keys().SpendPubKey, wl.Keys().ViewPubKey)
+
+	// Handle chain-ahead-of-wallet (chain was reset while wallet was offline)
+	chainHeight := s.daemon.Chain().Height()
+	walletHeight := wl.SyncedHeight()
+	if walletHeight > chainHeight {
+		if removed := wl.RewindToHeight(chainHeight); removed > 0 {
+			wl.Save()
+		}
+	}
+
+	// Catch up on blocks that arrived before the wallet was loaded
+	if walletHeight < chainHeight {
+		for h := walletHeight + 1; h <= chainHeight; h++ {
+			block := s.daemon.Chain().GetBlockByHeight(h)
+			if block == nil {
+				break
+			}
+			scanner.ScanBlock(blockToScanData(block))
+		}
+		wl.SetSyncedHeight(chainHeight)
+		wl.Save()
+	}
+
+	// Publish to API server
+	s.wallet = wl
+	s.scanner = scanner
+	s.password = password
+
+	// Publish to CLI (for autoScanBlocks / shutdown)
+	s.cli.mu.Lock()
+	s.cli.wallet = wl
+	s.cli.scanner = scanner
+	s.cli.password = password
+	s.cli.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"loaded":  true,
+		"address": wl.Address(),
+	})
+}
+
 // handleSeed returns the wallet recovery seed (BIP39 mnemonic).
 // POST /api/wallet/seed
 func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {

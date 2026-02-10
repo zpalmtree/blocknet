@@ -25,6 +25,9 @@ type APIServer struct {
 	locked   bool
 	password []byte
 	mu       sync.RWMutex
+
+	// Back-reference to CLI for wallet hot-loading in daemon mode
+	cli *CLI
 }
 
 // NewAPIServer creates a new API server. wallet and scanner may be nil
