@@ -242,7 +242,10 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 
 	// Search for tx in blocks first
 	tx, blockHeight, found := e.findTx(path)
-	
+
+	// Encrypted payment IDs keyed by output index
+	var encPaymentIDs map[int][8]byte
+
 	// If not found in blocks, check mempool
 	inMempool := false
 	if !found {
@@ -250,9 +253,33 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 		if err == nil && len(hashBytes) == 32 {
 			var txID [32]byte
 			copy(txID[:], hashBytes)
-			tx, found = e.daemon.mempool.GetTransaction(txID)
+			var aux *TxAuxData
+			tx, aux, found = e.daemon.mempool.GetTransactionWithAux(txID)
 			if found {
 				inMempool = true
+				if aux != nil {
+					encPaymentIDs = aux.PaymentIDs
+				}
+			}
+		}
+	} else {
+		// Confirmed tx — get payment IDs from block aux data
+		block := e.daemon.chain.GetBlockByHeight(blockHeight)
+		if block != nil && block.AuxData != nil && len(block.AuxData.PaymentIDs) > 0 {
+			txIDHash, _ := tx.TxID()
+			txHashStr := fmt.Sprintf("%x", txIDHash)
+			for txIdx, btx := range block.Transactions {
+				btxID, _ := btx.TxID()
+				if fmt.Sprintf("%x", btxID) == txHashStr {
+					encPaymentIDs = make(map[int][8]byte)
+					for key, pid := range block.AuxData.PaymentIDs {
+						var ki, oi int
+						if _, err := fmt.Sscanf(key, "%d:%d", &ki, &oi); err == nil && ki == txIdx {
+							encPaymentIDs[oi] = pid
+						}
+					}
+					break
+				}
 			}
 		}
 	}
@@ -279,12 +306,16 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	// Build outputs data
 	var outputs []map[string]interface{}
 	for i, out := range tx.Outputs {
-		outputs = append(outputs, map[string]interface{}{
+		entry := map[string]interface{}{
 			"Index":      i,
 			"Commitment": fmt.Sprintf("%x", out.Commitment),
 			"PublicKey":  fmt.Sprintf("%x", out.PublicKey),
 			"RangeProof": len(out.RangeProof),
-		})
+		}
+		if pid, ok := encPaymentIDs[i]; ok {
+			entry["EncPaymentID"] = fmt.Sprintf("%x", pid)
+		}
+		outputs = append(outputs, entry)
 	}
 
 	data := map[string]interface{}{
@@ -614,6 +645,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <div class="prop"><div class="prop-k">Stealth Address</div><div class="prop-v mono">{{.PublicKey}}</div></div>
 <div class="prop"><div class="prop-k">Commitment</div><div class="prop-v mono">{{.Commitment}}</div></div>
 <div class="prop"><div class="prop-k">Range Proof</div><div class="prop-v">{{.RangeProof}} bytes (Bulletproof)</div></div>
+{{if .EncPaymentID}}<div class="prop"><div class="prop-k">Payment ID</div><div class="prop-v mono"><span class="g">{{.EncPaymentID}}</span> <span class="d">(encrypted)</span></div></div>{{end}}
 </div>
 {{end}}
 

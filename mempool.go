@@ -248,6 +248,18 @@ func (m *Mempool) GetTransaction(txID [32]byte) (*Transaction, bool) {
 	return entry.Tx, true
 }
 
+// GetTransactionWithAux returns a transaction and its aux data by ID
+func (m *Mempool) GetTransactionWithAux(txID [32]byte) (*Transaction, *TxAuxData, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entry, exists := m.txByID[txID]
+	if !exists {
+		return nil, nil, false
+	}
+	return entry.Tx, entry.Aux, true
+}
+
 // HasTransaction checks if a transaction is in the mempool
 func (m *Mempool) HasTransaction(txID [32]byte) bool {
 	m.mu.RLock()
