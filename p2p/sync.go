@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -484,6 +485,13 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	// Get our current height
 	ourStatus := sm.getStatus()
 	startHeight := ourStatus.Height + 1
+
+	// When close to the tip, overlap by a few blocks so we pick up
+	// any short-fork blocks the peer has that differ from ours.
+	if gap := targetHeight - ourStatus.Height; gap <= 50 && ourStatus.Height > 10 {
+		startHeight = ourStatus.Height - 10
+	}
+
 	sm.mu.Lock()
 	sm.syncProgress = ourStatus.Height
 	sm.mu.Unlock()
@@ -608,8 +616,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 			// Process block
 			if err := sm.processBlock(blockData); err != nil {
-				// log.Printf("[sync] failed to process block at height %d: %v", nextHeight, err)
-				// Invalid block - abort sync
+				log.Printf("[sync] block %d failed: %v", nextHeight, err)
 				return
 			}
 

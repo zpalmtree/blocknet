@@ -451,14 +451,11 @@ func (d *Daemon) processBlockData(data []byte) error {
 
 	accepted, _, err := d.chain.ProcessBlock(&block)
 	if err != nil {
-		// Orphan blocks are not errors - just skip them
-		if err == ErrOrphanBlock {
-			return nil
-		}
 		return err
 	}
 	if !accepted {
-		return fmt.Errorf("block not accepted")
+		// Duplicate block we already have — harmless during sync
+		return nil
 	}
 
 	d.mempool.OnBlockConnected(&block)
