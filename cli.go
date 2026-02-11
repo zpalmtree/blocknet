@@ -869,8 +869,12 @@ func (c *CLI) cmdMining(args []string) error {
 			fmt.Println("Mining already running")
 			return nil
 		}
-		c.daemon.Miner().SetThreads(1)
-		fmt.Println("Starting miner (1 thread)...")
+		threads := c.daemon.Miner().Threads()
+		threadLabel := "threads"
+		if threads == 1 {
+			threadLabel = "thread"
+		}
+		fmt.Printf("Starting miner (%d %s)...\n", threads, threadLabel)
 		fmt.Println("  Note: Argon2id PoW uses ~2GB RAM per thread")
 		fmt.Println("  First hash may take 10-30 seconds...")
 		c.daemon.StartMining()
@@ -895,7 +899,7 @@ func (c *CLI) cmdMining(args []string) error {
 		c.daemon.Miner().SetThreads(n)
 		fmt.Printf("Mining threads set to %d (uses ~%dGB RAM)\n", n, n*2)
 		if c.daemon.IsMining() {
-			fmt.Println("  Takes effect on next block attempt")
+			fmt.Println("  Applying now (current block attempt will restart)")
 		}
 	default:
 		return fmt.Errorf("usage: mining [start|stop|threads <N>]")

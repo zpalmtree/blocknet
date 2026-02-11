@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -50,6 +51,7 @@ type Miner struct {
 	chain    *Chain
 	mempool  *Mempool
 	stats    MinerStats
+	threads  atomic.Int32
 	running  atomic.Bool
 	cancel   context.CancelFunc
 	newBlock chan struct{} // signals miner to restart on new chain tip
@@ -57,7 +59,12 @@ type Miner struct {
 
 // NewMiner creates a new miner
 func NewMiner(chain *Chain, mempool *Mempool, config MinerConfig) *Miner {
-	return &Miner{
+	threads := config.Threads
+	if threads < 1 {
+		threads = 1
+	}
+
+	m := &Miner{
 		config:   config,
 		chain:    chain,
 		mempool:  mempool,
@@ -66,6 +73,8 @@ func NewMiner(chain *Chain, mempool *Mempool, config MinerConfig) *Miner {
 			StartTime: time.Now(),
 		},
 	}
+	m.threads.Store(int32(threads))
+	return m
 }
 
 // SetRewardKeys updates the mining reward destination keys.
@@ -151,19 +160,18 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData m
 	// Number of mining threads
 	// Default to 1 for Argon2id since each hash uses 2GB RAM
 	// User can override with config.Threads
-	numThreads := m.config.Threads
-	if numThreads <= 0 {
-		numThreads = 1
-	}
+	numThreads := m.Threads()
 
 	// Channel to receive winning result
 	resultChan := make(chan uint64, 1)
 	mineCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var wg sync.WaitGroup
 
 	// Start mining threads
 	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
 		go func(threadID int) {
+			defer wg.Done()
 			nonce := uint64(threadID)
 			step := uint64(numThreads)
 			localHeader := make([]byte, len(headerBytes))
@@ -215,14 +223,22 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData m
 		}(t)
 	}
 
+	stopWorkers := func() {
+		cancel()
+		wg.Wait()
+	}
+
 	// Wait for result, new-block signal, or cancellation
 	select {
 	case <-ctx.Done():
+		stopWorkers()
 		return nil, ctx.Err()
 	case <-m.newBlock:
 		// Chain tip changed -- abandon this stale solve
+		stopWorkers()
 		return nil, errNewBlock
 	case winningNonce := <-resultChan:
+		stopWorkers()
 		block.Header.Nonce = winningNonce
 		atomic.AddUint64(&m.stats.BlocksFound, 1)
 		m.stats.LastHashTime = time.Now()
@@ -319,20 +335,26 @@ func (m *Miner) IsRunning() bool {
 	return m.running.Load()
 }
 
-// SetThreads updates the number of mining threads (takes effect on next block)
+// SetThreads updates the number of mining threads.
+// If mining is active, the current block attempt is restarted so new
+// thread count applies immediately.
 func (m *Miner) SetThreads(n int) {
 	if n < 1 {
 		n = 1
 	}
-	m.config.Threads = n
+	prev := int(m.threads.Swap(int32(n)))
+	if prev != n && m.IsRunning() {
+		m.NotifyNewBlock()
+	}
 }
 
 // Threads returns the current thread count
 func (m *Miner) Threads() int {
-	if m.config.Threads < 1 {
+	n := int(m.threads.Load())
+	if n < 1 {
 		return 1
 	}
-	return m.config.Threads
+	return n
 }
 
 // Stats returns current mining statistics
