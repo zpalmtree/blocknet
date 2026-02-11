@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -466,6 +467,98 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"loaded":  true,
 		"address": wl.Address(),
+	})
+}
+
+// handleImportWallet creates a new wallet from a BIP39 recovery seed.
+// POST /api/wallet/import
+func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
+	if s.wallet != nil {
+		writeError(w, http.StatusConflict, "wallet already loaded")
+		return
+	}
+
+	var req struct {
+		Mnemonic string `json:"mnemonic"`
+		Password string `json:"password"`
+		Filename string `json:"filename"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Mnemonic == "" {
+		writeError(w, http.StatusBadRequest, "mnemonic is required")
+		return
+	}
+	if len(req.Password) < 3 {
+		writeError(w, http.StatusBadRequest, "password must be at least 3 characters")
+		return
+	}
+	if !wallet.ValidateMnemonic(req.Mnemonic) {
+		writeError(w, http.StatusBadRequest, "invalid mnemonic phrase")
+		return
+	}
+
+	// Resolve wallet path: basename only, same directory as configured --wallet path
+	walletPath := s.cli.walletFile
+	if req.Filename != "" {
+		base := filepath.Base(req.Filename)
+		if base == "." || base == "/" {
+			writeError(w, http.StatusBadRequest, "invalid filename")
+			return
+		}
+		walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+	}
+
+	// Don't overwrite an existing file
+	if _, err := os.Stat(walletPath); err == nil {
+		writeError(w, http.StatusConflict, "wallet file already exists: "+filepath.Base(walletPath))
+		return
+	}
+
+	password := []byte(req.Password)
+	wl, err := wallet.NewWalletFromMnemonic(walletPath, password, req.Mnemonic, defaultWalletConfig())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create wallet: "+err.Error())
+		return
+	}
+
+	scanner := wallet.NewScanner(wl, defaultScannerConfig())
+
+	// Point miner rewards at this wallet
+	s.daemon.Miner().SetRewardKeys(wl.Keys().SpendPubKey, wl.Keys().ViewPubKey)
+
+	// Scan the entire chain to find outputs belonging to this seed
+	chainHeight := s.daemon.Chain().Height()
+	if chainHeight > 0 {
+		for h := uint64(1); h <= chainHeight; h++ {
+			block := s.daemon.Chain().GetBlockByHeight(h)
+			if block == nil {
+				break
+			}
+			scanner.ScanBlock(blockToScanData(block))
+		}
+		wl.SetSyncedHeight(chainHeight)
+		wl.Save()
+	}
+
+	// Publish to API server
+	s.wallet = wl
+	s.scanner = scanner
+	s.password = password
+
+	// Publish to CLI (for autoScanBlocks / shutdown)
+	s.cli.mu.Lock()
+	s.cli.wallet = wl
+	s.cli.scanner = scanner
+	s.cli.password = password
+	s.cli.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"imported": true,
+		"address":  wl.Address(),
+		"filename": filepath.Base(walletPath),
 	})
 }
 

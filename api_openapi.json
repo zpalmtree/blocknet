@@ -419,6 +419,123 @@
         }
       }
     },
+    "/api/wallet/import": {
+      "post": {
+        "operationId": "importWallet",
+        "tags": ["Wallet"],
+        "summary": "Import wallet from recovery seed",
+        "description": "Creates a new wallet from a BIP39 12-word recovery seed, encrypts it with the given password, and saves it to disk. The wallet is loaded into the running daemon and the entire blockchain is scanned for outputs belonging to this seed. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["mnemonic", "password"],
+                "properties": {
+                  "mnemonic": {
+                    "type": "string",
+                    "description": "BIP39 12-word recovery phrase"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 3,
+                    "description": "Encryption password for the wallet file (min 3 characters)"
+                  },
+                  "filename": {
+                    "type": "string",
+                    "description": "Optional wallet filename (basename only, no path separators). Defaults to the configured --wallet path."
+                  }
+                }
+              },
+              "example": {
+                "mnemonic": "abandon ability able about above absent absorb abstract absurd abuse access accident",
+                "password": "my-wallet-passphrase",
+                "filename": "restored.dat"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Wallet imported and loaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "imported": { "type": "boolean" },
+                    "address": {
+                      "type": "string",
+                      "description": "Wallet stealth address (base58-encoded)"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "description": "Basename of the created wallet file"
+                    }
+                  }
+                },
+                "example": {
+                  "imported": true,
+                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "filename": "restored.dat"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "bad_mnemonic": {
+                    "summary": "Invalid seed phrase",
+                    "value": { "error": "invalid mnemonic phrase" }
+                  },
+                  "short_password": {
+                    "summary": "Password too short",
+                    "value": { "error": "password must be at least 3 characters" }
+                  },
+                  "bad_filename": {
+                    "summary": "Invalid filename",
+                    "value": { "error": "invalid filename" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": {
+            "description": "Wallet already loaded or file already exists",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "already_loaded": {
+                    "summary": "Wallet already active",
+                    "value": { "error": "wallet already loaded" }
+                  },
+                  "file_exists": {
+                    "summary": "File collision",
+                    "value": { "error": "wallet file already exists: restored.dat" }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to create wallet",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "failed to create wallet: invalid mnemonic: checksum mismatch" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wallet/balance": {
       "get": {
         "operationId": "getBalance",
