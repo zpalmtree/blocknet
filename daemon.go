@@ -14,6 +14,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// ErrDuplicateBlock is returned by processBlockData when the block is already known.
+// This is not a validation failure — it tells callers to skip relay and notification.
+var ErrDuplicateBlock = errors.New("duplicate block")
+
 type Daemon struct {
 	mu sync.RWMutex
 
@@ -475,8 +479,7 @@ func (d *Daemon) processBlockData(data []byte) error {
 		return err
 	}
 	if !accepted {
-		// Duplicate block we already have — harmless during sync
-		return nil
+		return ErrDuplicateBlock
 	}
 
 	if isMainChain {

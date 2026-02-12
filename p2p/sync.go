@@ -279,7 +279,7 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 	if sm.processBlock != nil {
 		if err := sm.processBlock(data); err != nil {
-			return // Don't relay invalid blocks
+			return // duplicate, orphan, or invalid — don't relay
 		}
 		// Notify daemon (miner restart, wallet subscribers)
 		if sm.onBlockAccepted != nil {
