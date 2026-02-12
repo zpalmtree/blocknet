@@ -215,8 +215,8 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData m
 					newTime := time.Now().Unix()
 					if newTime != lastTimestamp {
 						lastTimestamp = newTime
-						// Update local header with new timestamp
-						binary.LittleEndian.PutUint64(localHeader[40:48], uint64(newTime))
+						// Update local header with new timestamp (offset 76 in SerializeForPoW)
+						binary.LittleEndian.PutUint64(localHeader[76:84], uint64(newTime))
 					}
 				}
 			}

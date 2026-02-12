@@ -127,6 +127,28 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		}
 	}
 
+	// Verify chain integrity — truncate to last clean block if violations found
+	if chain.Height() > 0 {
+		violations := chain.VerifyChain()
+		if len(violations) > 0 {
+			first := violations[0].Height
+			truncateTo := first - 1
+			log.Printf("Chain integrity check: %d violation(s), first at height %d", len(violations), first)
+			for _, v := range violations {
+				log.Printf("  Height %d: %s", v.Height, v.Message)
+			}
+			log.Printf("Truncating chain from height %d to %d and re-syncing", chain.Height(), truncateTo)
+			if err := chain.TruncateToHeight(truncateTo); err != nil {
+				chain.Close()
+				cancel()
+				return nil, fmt.Errorf("failed to truncate chain: %w", err)
+			}
+			log.Printf("Chain truncated to height %d, will re-sync the rest from peers", truncateTo)
+		} else {
+			log.Printf("Chain integrity verified: %d blocks OK", chain.Height())
+		}
+	}
+
 	// Create mempool (uses chain's key image checker)
 	mempool := NewMempool(DefaultMempoolConfig(), chain.IsKeyImageSpent)
 
@@ -330,39 +352,10 @@ func (d *Daemon) StartMining() {
 
 // handleMinedBlock processes a block we mined
 func (d *Daemon) handleMinedBlock(block *Block) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Add to our chain
-	prevBest := d.chain.BestHash()
-	accepted, isMainChain, err := d.chain.ProcessBlock(block)
-	if err != nil || !accepted {
-		log.Printf("Failed to add mined block: %v", err)
+	if err := d.SubmitBlock(block); err != nil {
+		log.Printf("Mined block rejected: %v", err)
 		return
 	}
-
-	if !isMainChain {
-		// Lost race to a peer block at the same height.
-		// Do NOT touch the mempool -- our transactions are still valid
-		// and should be included in the next block attempt.
-		return
-	}
-
-	// Update mempool for all blocks that became main-chain.
-	d.updateMempoolForAcceptedMainChain(block, prevBest)
-
-	// Broadcast to peers
-	blockData, err := json.Marshal(block)
-	if err != nil {
-		log.Printf("Failed to marshal block: %v", err)
-		return
-	}
-
-	d.syncMgr.BroadcastBlock(blockData)
-
-	// Notify wallet subscribers
-	d.notifyBlock(block)
-	d.notifyMinedBlock(block)
 }
 
 // handleBlock processes a block from a peer
@@ -372,23 +365,27 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 		return
 	}
 
+	// Validate PoW and consensus structure before accepting
+	if err := ValidateBlockP2P(&block, d.chain); err != nil {
+		log.Printf("Rejected announced block at height %d from %s: %v", block.Header.Height, from.String()[:8], err)
+		return
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(&block)
 	if err != nil || !accepted {
-		// May be orphan or invalid, ignore silently
 		return
 	}
 
 	if !isMainChain {
-		// Fork block -- don't touch mempool or relay
 		return
 	}
 
 	d.updateMempoolForAcceptedMainChain(&block, prevBest)
-	log.Printf("Received and accepted block at height %d from %s", block.Header.Height, from.String()[:8])
+	log.Printf("Accepted block at height %d from %s", block.Header.Height, from.String()[:8])
 
 	// Relay to other peers (exclude sender)
 	d.node.RelayBlock(from, data)
@@ -475,6 +472,11 @@ func (d *Daemon) processBlockData(data []byte) error {
 	var block Block
 	if err := json.Unmarshal(data, &block); err != nil {
 		return err
+	}
+
+	// Validate PoW and consensus structure before accepting from peers.
+	if err := ValidateBlockP2P(&block, d.chain); err != nil {
+		return fmt.Errorf("rejected p2p block at height %d: %w", block.Header.Height, err)
 	}
 
 	d.mu.Lock()
@@ -781,13 +783,13 @@ func (d *Daemon) MinerStats() MinerStats {
 // aux is optional auxiliary data (e.g. encrypted payment IDs).
 // SubmitBlock validates a mined block, adds it to the chain, and broadcasts to peers.
 func (d *Daemon) SubmitBlock(block *Block) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	// Validate block (PoW, difficulty, merkle root, transactions, etc.)
 	if err := ValidateBlock(block, d.chain); err != nil {
 		return fmt.Errorf("invalid block: %w", err)
 	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(block)

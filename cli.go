@@ -451,6 +451,8 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdSave()
 	case "purge":
 		return c.cmdPurgeData()
+	case "verify":
+		c.cmdVerify()
 	case "quit", "exit":
 		return fmt.Errorf("quit")
 	default:
@@ -483,6 +485,7 @@ Commands:%s
   lock              Lock wallet
   unlock            Unlock wallet
   save              Save wallet to disk
+  verify            Check chain integrity (difficulty + timestamps)
   purge             Delete all blockchain data (cannot be undone)
   quit              Exit (saves automatically)
 `, viewOnlyNote, func() string {
@@ -1048,6 +1051,26 @@ func (c *CLI) cmdSave() error {
 	}
 	fmt.Println("Wallet saved")
 	return nil
+}
+
+func (c *CLI) cmdVerify() {
+	fmt.Println("Verifying chain integrity (difficulty + timestamps)...")
+	chain := c.daemon.Chain()
+	height := chain.Height()
+	fmt.Printf("Checking %d blocks...\n", height)
+
+	violations := chain.VerifyChain()
+	if len(violations) == 0 {
+		fmt.Printf("Chain is clean. All %d blocks have correct difficulty and timestamps.\n", height)
+		return
+	}
+
+	fmt.Printf("\nFOUND %d VIOLATION(S):\n", len(violations))
+	for _, v := range violations {
+		fmt.Printf("  Height %d: %s\n", v.Height, v.Message)
+	}
+	fmt.Println("\nBlocks with violations may have been injected without proper validation.")
+	fmt.Println("Consider purging chain data and re-syncing from trusted peers.")
 }
 
 func (c *CLI) cmdPurgeData() error {

@@ -316,6 +316,227 @@ func validatePoW(header *BlockHeader) bool {
 	return PowCheckTarget(hash, target)
 }
 
+// ValidateBlockP2P validates a block received from a peer over P2P.
+// This validation is chain-aware and enforces core consensus rules, while
+// still allowing side-chain/fork blocks that do not extend the current tip.
+func ValidateBlockP2P(block *Block, chain *Chain) error {
+	header := &block.Header
+
+	if header.Version == 0 {
+		return fmt.Errorf("invalid block version")
+	}
+
+	if chain == nil {
+		return fmt.Errorf("chain is nil")
+	}
+
+	// Parent/height consistency checks (for non-genesis blocks).
+	if header.Height > 0 {
+		parent := chain.GetBlock(header.PrevHash)
+		if parent == nil {
+			return ErrOrphanBlock
+		}
+		if header.Height != parent.Header.Height+1 {
+			return fmt.Errorf("invalid height linkage: parent=%d child=%d", parent.Header.Height, header.Height)
+		}
+		// Basic timestamp sanity for non-tip extensions.
+		if header.Timestamp <= parent.Header.Timestamp {
+			return fmt.Errorf("timestamp %d <= parent timestamp %d", header.Timestamp, parent.Header.Timestamp)
+		}
+	}
+
+	// For blocks extending the current tip, enforce full tip rules.
+	if header.PrevHash == chain.BestHash() {
+		if header.Height != chain.Height()+1 {
+			return fmt.Errorf("invalid height: expected %d, got %d", chain.Height()+1, header.Height)
+		}
+		expectedDiff := chain.NextDifficulty()
+		if header.Difficulty != expectedDiff {
+			return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedDiff, header.Difficulty)
+		}
+		if err := validateTimestamp(header, chain); err != nil {
+			return fmt.Errorf("invalid timestamp: %w", err)
+		}
+	}
+
+	if header.Difficulty < MinDifficulty {
+		return fmt.Errorf("difficulty %d below minimum %d", header.Difficulty, MinDifficulty)
+	}
+
+	// Always reject excessively-future timestamps.
+	maxTime := time.Now().Add(TimestampFuturLimit).Unix()
+	if header.Timestamp > maxTime {
+		return fmt.Errorf("timestamp too far in future")
+	}
+
+	if !validatePoW(header) {
+		return fmt.Errorf("invalid proof of work")
+	}
+
+	if block.Size() > MaxBlockSize {
+		return fmt.Errorf("block too large: %d > %d", block.Size(), MaxBlockSize)
+	}
+
+	if len(block.Transactions) == 0 {
+		return fmt.Errorf("block has no transactions")
+	}
+
+	if !block.Transactions[0].IsCoinbase() {
+		return fmt.Errorf("first transaction is not coinbase")
+	}
+
+	for i := 1; i < len(block.Transactions); i++ {
+		if block.Transactions[i].IsCoinbase() {
+			return fmt.Errorf("multiple coinbase transactions")
+		}
+	}
+
+	// Validate all transactions and enforce no duplicated key images within the block.
+	seenKeyImages := make(map[[32]byte]struct{})
+	for i, tx := range block.Transactions {
+		if err := ValidateTransaction(tx, chain.IsKeyImageSpent); err != nil {
+			return fmt.Errorf("invalid transaction %d: %w", i, err)
+		}
+		if tx.IsCoinbase() {
+			continue
+		}
+		for j, input := range tx.Inputs {
+			if _, exists := seenKeyImages[input.KeyImage]; exists {
+				return fmt.Errorf("invalid transaction %d input %d: duplicate key image in block", i, j)
+			}
+			seenKeyImages[input.KeyImage] = struct{}{}
+		}
+	}
+
+	merkleRoot, err := block.ComputeMerkleRoot()
+	if err != nil {
+		return fmt.Errorf("failed to compute merkle root: %w", err)
+	}
+	if merkleRoot != header.MerkleRoot {
+		return fmt.Errorf("invalid merkle root")
+	}
+
+	return nil
+}
+
+// ChainViolation describes a single integrity violation found during chain verification.
+type ChainViolation struct {
+	Height  uint64
+	Message string
+}
+
+// VerifyChain walks the entire chain and checks every block's difficulty
+// against what LWMA should have produced, plus timestamp rules. This is a
+// fast arithmetic-only check (no Argon2id), so it finishes in seconds. It
+// returns all violations found, or nil if the chain is clean.
+func (c *Chain) VerifyChain() []ChainViolation {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	height := c.height
+	if height == 0 {
+		return nil
+	}
+
+	// Load all blocks we need into a flat slice so lookups are fast.
+	blocks := make([]*Block, height+1)
+	for h := uint64(0); h <= height; h++ {
+		blocks[h] = c.getBlockByHeightLocked(h)
+		if blocks[h] == nil {
+			return []ChainViolation{{Height: h, Message: "block missing from storage"}}
+		}
+	}
+
+	var violations []ChainViolation
+
+	for h := uint64(1); h <= height; h++ {
+		block := blocks[h]
+		prev := blocks[h-1]
+
+		// --- Difficulty check ---
+		var expectedDiff uint64
+		if h < uint64(LWMAWindow) {
+			expectedDiff = MinDifficulty
+		} else {
+			expectedDiff = computeLWMA(blocks, h)
+		}
+		if block.Header.Difficulty != expectedDiff {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("difficulty mismatch: stored %d, expected %d", block.Header.Difficulty, expectedDiff),
+			})
+		}
+
+		// --- Timestamp checks ---
+		// Must be > median of last 11
+		medianCount := 11
+		if int(h) < medianCount {
+			medianCount = int(h)
+		}
+		timestamps := make([]int64, medianCount)
+		for i := 0; i < medianCount; i++ {
+			timestamps[i] = blocks[h-uint64(medianCount)+uint64(i)].Header.Timestamp
+		}
+		for i := 0; i < len(timestamps); i++ {
+			for j := i + 1; j < len(timestamps); j++ {
+				if timestamps[i] > timestamps[j] {
+					timestamps[i], timestamps[j] = timestamps[j], timestamps[i]
+				}
+			}
+		}
+		median := timestamps[len(timestamps)/2]
+		if block.Header.Timestamp <= median {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("timestamp %d <= median %d", block.Header.Timestamp, median),
+			})
+		}
+
+		// Suspiciously fast blocks (< 1 second apart)
+		blockTime := block.Header.Timestamp - prev.Header.Timestamp
+		if blockTime < 1 {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("block time %ds (prev timestamp %d, this %d)", blockTime, prev.Header.Timestamp, block.Header.Timestamp),
+			})
+		}
+	}
+
+	return violations
+}
+
+// computeLWMA replicates the LWMA difficulty calculation for a given height,
+// using a pre-loaded block slice. height must be >= LWMAWindow.
+func computeLWMA(blocks []*Block, height uint64) uint64 {
+	var weightedSolvetimeSum int64
+	var difficultySum uint64
+	weightSum := int64(LWMAWindow * (LWMAWindow + 1) / 2)
+
+	for i := 1; i <= LWMAWindow; i++ {
+		idx := height - uint64(LWMAWindow) + uint64(i)
+		solvetime := blocks[idx].Header.Timestamp - blocks[idx-1].Header.Timestamp
+		if solvetime < LWMAMinSolvetime {
+			solvetime = LWMAMinSolvetime
+		}
+		if solvetime > LWMAMaxSolvetime {
+			solvetime = LWMAMaxSolvetime
+		}
+		weightedSolvetimeSum += solvetime * int64(i)
+		difficultySum += blocks[idx].Header.Difficulty
+	}
+
+	avgDifficulty := difficultySum / uint64(LWMAWindow)
+	expectedWeightedSum := int64(BlockIntervalSec) * weightSum
+	if weightedSolvetimeSum < 1 {
+		weightedSolvetimeSum = 1
+	}
+	newDiff := avgDifficulty * uint64(expectedWeightedSum) / uint64(weightedSolvetimeSum)
+	if newDiff < MinDifficulty {
+		newDiff = MinDifficulty
+	}
+	return newDiff
+}
+
 // ============================================================================
 // Chain State
 // ============================================================================
@@ -892,6 +1113,78 @@ func (c *Chain) getAncestorPath(tip [32]byte) [][32]byte {
 		current = b.Header.PrevHash
 	}
 	return path
+}
+
+// TruncateToHeight removes all main-chain blocks above keepHeight,
+// rolling back key images, height index, and tip metadata. The chain
+// will re-sync the removed portion from peers on next sync cycle.
+func (c *Chain) TruncateToHeight(keepHeight uint64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if keepHeight >= c.height {
+		return nil // nothing to do
+	}
+
+	// Disconnect blocks from top down
+	for h := c.height; h > keepHeight; h-- {
+		block := c.getBlockByHeightLocked(h)
+		if block == nil {
+			// Already missing, just clean up the index
+			c.storage.RemoveMainChainBlock(h)
+			delete(c.byHeight, h)
+			continue
+		}
+
+		// Remove key images from this block
+		for _, tx := range block.Transactions {
+			if !tx.IsCoinbase() {
+				for _, input := range tx.Inputs {
+					delete(c.keyImages, input.KeyImage)
+					c.storage.UnmarkKeyImageSpent(input.KeyImage)
+				}
+			}
+		}
+
+		// Remove from height index
+		c.storage.RemoveMainChainBlock(h)
+		delete(c.byHeight, h)
+		hash := block.Hash()
+		delete(c.blocks, hash)
+		delete(c.workAt, hash)
+	}
+
+	// Set new tip
+	newTip := c.getBlockByHeightLocked(keepHeight)
+	if newTip == nil {
+		return fmt.Errorf("block at height %d not found after truncation", keepHeight)
+	}
+	newHash := newTip.Hash()
+	newWork := c.workAt[newHash]
+
+	c.bestHash = newHash
+	c.height = keepHeight
+	c.totalWork = newWork
+
+	// Rebuild timestamps window from the kept chain
+	c.timestamps = nil
+	start := uint64(0)
+	if keepHeight > uint64(LWMAWindow) {
+		start = keepHeight - uint64(LWMAWindow)
+	}
+	for h := start; h <= keepHeight; h++ {
+		b := c.getBlockByHeightLocked(h)
+		if b != nil {
+			c.timestamps = append(c.timestamps, b.Header.Timestamp)
+		}
+	}
+
+	// Persist new tip
+	if err := c.storage.SetTip(newHash, keepHeight, newWork); err != nil {
+		return fmt.Errorf("failed to persist new tip: %w", err)
+	}
+
+	return nil
 }
 
 // TotalWork returns the cumulative work of the main chain
