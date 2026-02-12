@@ -175,6 +175,9 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		IsOrphanError: func(err error) bool {
 			return errors.Is(err, ErrOrphanBlock)
 		},
+		IsDuplicateError: func(err error) bool {
+			return errors.Is(err, ErrDuplicateBlock) || errors.Is(err, ErrSideChainBlock)
+		},
 		GetBlockMeta: func(data []byte) (uint64, [32]byte, error) {
 			var block Block
 			if err := json.Unmarshal(data, &block); err != nil {

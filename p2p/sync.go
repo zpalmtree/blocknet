@@ -92,6 +92,7 @@ type SyncManager struct {
 	processTx         func(data []byte) error
 	onBlockAccepted   func(data []byte)
 	isOrphanError     func(error) bool
+	isDuplicateError  func(error) bool
 	getBlockMeta      func(data []byte) (height uint64, prevHash [32]byte, err error)
 	getBlockHash      func(data []byte) (hash [32]byte, err error)
 	fetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error)
@@ -120,6 +121,7 @@ type SyncConfig struct {
 	ProcessTx         func(data []byte) error                                      // Process a mempool transaction
 	OnBlockAccepted   func(data []byte)                                            // Called when a new block announcement is accepted
 	IsOrphanError     func(error) bool                                             // Orphan classifier for sync recovery (required for recovery to work)
+	IsDuplicateError  func(error) bool                                             // Duplicate classifier — block already known, treat as success
 	GetBlockMeta      func(data []byte) (uint64, [32]byte, error)                  // Extract (height, prevHash) from serialized block; required for orphan recovery
 	GetBlockHash      func(data []byte) ([32]byte, error)                          // Extract block hash from serialized block; required for parent hash verification in orphan recovery
 	FetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error) // Override block-by-hash fetching (default: p2p FetchBlocks)
@@ -139,6 +141,7 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		processTx:         cfg.ProcessTx,
 		onBlockAccepted:   cfg.OnBlockAccepted,
 		isOrphanError:     cfg.IsOrphanError,
+		isDuplicateError:  cfg.IsDuplicateError,
 		getBlockMeta:      cfg.GetBlockMeta,
 		getBlockHash:      cfg.GetBlockHash,
 		downloadBuffer:    make(map[uint64][]byte),
@@ -740,6 +743,13 @@ func (sm *SyncManager) isOrphanErr(err error) bool {
 	return sm.isOrphanError(err)
 }
 
+func (sm *SyncManager) isDuplicateErr(err error) bool {
+	if err == nil || sm.isDuplicateError == nil {
+		return false
+	}
+	return sm.isDuplicateError(err)
+}
+
 func (sm *SyncManager) ProcessBlockWithRecovery(blockData []byte, peers []PeerStatus) error {
 	return sm.ProcessBlockWithRecoveryCtx(sm.ctx, blockData, peers)
 }
@@ -750,7 +760,7 @@ func (sm *SyncManager) ProcessBlockWithRecoveryCtx(ctx context.Context, blockDat
 	}
 
 	err := sm.processBlock(blockData)
-	if err == nil {
+	if err == nil || sm.isDuplicateErr(err) {
 		return nil
 	}
 	if !sm.isOrphanErr(err) {
@@ -830,8 +840,8 @@ outer:
 				return fmt.Errorf("orphan recovery failed to fetch parent %x (child height %d): %w", parentHash[:8], height, err)
 			}
 
-			// If the parent is known, this returns nil (accepted or duplicate).
-			if err := sm.processBlock(parentData); err != nil {
+			// If the parent is known, this returns nil (accepted) or duplicate (already have it).
+			if err := sm.processBlock(parentData); err != nil && !sm.isDuplicateErr(err) {
 				if sm.isOrphanErr(err) {
 					pending = append(pending, parentData)
 					current = parentData
@@ -847,7 +857,7 @@ outer:
 
 			// Parent chain is now connected; replay queued children from oldest to newest.
 			for i := len(pending) - 1; i >= 0; i-- {
-				if err := sm.processBlock(pending[i]); err != nil {
+				if err := sm.processBlock(pending[i]); err != nil && !sm.isDuplicateErr(err) {
 					return fmt.Errorf("orphan recovery replay failed: %w", err)
 				}
 			}
