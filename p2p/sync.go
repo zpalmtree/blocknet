@@ -544,13 +544,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 	// Get our current height
 	ourStatus := sm.getStatus()
-	startHeight := ourStatus.Height + 1
-
-	// When close to the tip, overlap by a few blocks so we pick up
-	// any short-fork blocks the peer has that differ from ours.
-	if gap := targetHeight - ourStatus.Height; gap <= 50 && ourStatus.Height > 10 {
-		startHeight = ourStatus.Height - 10
-	}
+	startHeight := computeSyncStartHeight(ourStatus.Height, targetHeight)
 
 	sm.mu.Lock()
 	sm.syncProgress = ourStatus.Height
@@ -746,6 +740,15 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 			}
 		}()
 	}
+}
+
+func computeSyncStartHeight(ourHeight uint64, targetHeight uint64) uint64 {
+	startHeight := ourHeight + 1
+	// Keep existing overlap semantics for near-tip sync.
+	if gap := targetHeight - ourHeight; gap <= 50 && ourHeight > 10 {
+		startHeight = ourHeight - 10
+	}
+	return startHeight
 }
 
 // downloader fetches blocks for assigned ranges

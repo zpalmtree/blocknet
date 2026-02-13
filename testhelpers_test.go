@@ -1,6 +1,19 @@
 package main
 
-import "testing"
+import (
+	"blocknet/p2p"
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+)
 
 func mustCreateTestChain(t *testing.T) (*Chain, *Storage, func()) {
 	t.Helper()
@@ -52,5 +65,156 @@ func assertTipUnchanged(t *testing.T, chain *Chain, wantHash [32]byte, wantHeigh
 	}
 	if tipHash != wantHash {
 		t.Fatalf("storage tip hash changed: got %x, want %x", tipHash[:8], wantHash[:8])
+	}
+}
+
+func mustStartTestDaemon(t *testing.T, chain *Chain) (*Daemon, func()) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mempool := NewMempool(DefaultMempoolConfig(), chain.IsKeyImageSpent, chain.IsCanonicalRingMember)
+	miner := NewMiner(chain, mempool, MinerConfig{})
+
+	d := &Daemon{
+		chain:   chain,
+		mempool: mempool,
+		miner:   miner,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+
+	cleanup := func() {
+		cancel()
+	}
+
+	return d, cleanup
+}
+
+func mustSubmitBlockData(t *testing.T, d *Daemon, b *Block) {
+	t.Helper()
+
+	data, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("failed to marshal block: %v", err)
+	}
+	if err := d.processBlockData(data); err != nil {
+		t.Fatalf("failed to process block data: %v", err)
+	}
+}
+
+func mustSendLengthPrefixedPayload(t *testing.T, s network.Stream, payload []byte) {
+	t.Helper()
+
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(payload)))
+	if _, err := s.Write(lenBuf[:]); err != nil {
+		t.Fatalf("failed to write length prefix: %v", err)
+	}
+	if _, err := s.Write(payload); err != nil {
+		t.Fatalf("failed to write payload: %v", err)
+	}
+}
+
+func mustMakeHTTPJSONRequest(
+	t *testing.T,
+	handler http.Handler,
+	method, path string,
+	body []byte,
+	headers map[string]string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+
+func mustCraftMalformedTxVariant(t *testing.T, kind string) []byte {
+	t.Helper()
+
+	switch kind {
+	case "empty-ringct-signature":
+		ringMembers := make([][32]byte, RingSize)
+		ringCommitments := make([][32]byte, RingSize)
+		tx := &Transaction{
+			Version: 1,
+			Fee:     1,
+			Inputs: []TxInput{
+				{
+					RingMembers:     ringMembers,
+					RingCommitments: ringCommitments,
+					RingSignature:   nil,
+				},
+			},
+			Outputs: []TxOutput{
+				{
+					Commitment: [32]byte{},
+					PublicKey:  [32]byte{},
+				},
+			},
+		}
+		return tx.Serialize()
+	default:
+		t.Fatalf("unknown malformed tx variant: %s", kind)
+		return nil
+	}
+}
+
+func mustStartLinkedTestNodes(t *testing.T) (*p2p.Node, *p2p.Node, func()) {
+	t.Helper()
+
+	cfg := p2p.DefaultNodeConfig()
+	cfg.ListenAddrs = []string{"/ip4/127.0.0.1/tcp/0"}
+	cfg.SeedNodes = nil
+
+	a, err := p2p.NewNode(cfg)
+	if err != nil {
+		t.Fatalf("failed to create node A: %v", err)
+	}
+	b, err := p2p.NewNode(cfg)
+	if err != nil {
+		_ = a.Stop()
+		t.Fatalf("failed to create node B: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.Connect(ctx, peer.AddrInfo{ID: b.PeerID(), Addrs: b.Addrs()}); err != nil {
+		_ = a.Stop()
+		_ = b.Stop()
+		t.Fatalf("failed to connect A->B: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if a.Host().Network().Connectedness(b.PeerID()) == network.Connected {
+			cleanup := func() {
+				_ = a.Stop()
+				_ = b.Stop()
+			}
+			return a, b, cleanup
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	_ = a.Stop()
+	_ = b.Stop()
+	t.Fatal("nodes failed to connect in time")
+	return nil, nil, func() {}
+}
+
+func assertPeerPenalized(t *testing.T, n *p2p.Node, pid peer.ID, minPenalty int) {
+	t.Helper()
+	if n == nil {
+		t.Fatal("node is nil")
+	}
+	// Severe penalties in this codebase are expected to ban.
+	if !n.IsBanned(pid) {
+		t.Fatalf("expected peer %s to be penalized/banned (minPenalty=%d)", pid, minPenalty)
 	}
 }

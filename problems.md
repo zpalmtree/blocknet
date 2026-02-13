@@ -353,21 +353,21 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
   Builds valid block and ingests through `ProcessBlock`.
 - `mustBuildCompetingBranch(t *testing.T, base *Block, count int, txSets [][]*Transaction) []*Block`  
   Real fork construction helper for reorg/finality tests.
-- `mustStartTestDaemon(t *testing.T, chain *Chain) (*Daemon, func())`  
+- [DONE] `mustStartTestDaemon(t *testing.T, chain *Chain) (*Daemon, func())`  
   Real daemon init and teardown for ingest-path tests.
-- `mustSubmitBlockData(t *testing.T, d *Daemon, b *Block)`  
+- [DONE] `mustSubmitBlockData(t *testing.T, d *Daemon, b *Block)`  
   Runs daemon ingest entrypoint (`processBlockData`/handler path).
-- `mustMakeHTTPJSONRequest(t *testing.T, handler http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder`  
+- [DONE] `mustMakeHTTPJSONRequest(t *testing.T, handler http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder`  
   Shared API/explorer handler request helper.
-- `mustStartLinkedTestNodes(t *testing.T) (*Node, *Node, func())`  
+- [DONE] `mustStartLinkedTestNodes(t *testing.T) (*Node, *Node, func())`  
   Real libp2p node pair for gater/dandelion/sync behaviors.
-- `mustSendLengthPrefixedPayload(t *testing.T, s network.Stream, payload []byte)`  
+- [DONE] `mustSendLengthPrefixedPayload(t *testing.T, s network.Stream, payload []byte)`  
   Stream writer for p2p cap tests.
-- `mustCraftMalformedTxVariant(t *testing.T, kind string) []byte`  
+- [DONE] `mustCraftMalformedTxVariant(t *testing.T, kind string) []byte`  
   Generates malformed tx bytes for FFI/ring/stem rejection tests.
 - [DONE] `assertTipUnchanged(t *testing.T, chain *Chain, wantHash [32]byte, wantHeight uint64)`  
   Canonical assertion for reject-without-mutation checks.
-- `assertPeerPenalized(t *testing.T, n *Node, pid peer.ID, minPenalty int)`  
+- [DONE] `assertPeerPenalized(t *testing.T, n *Node, pid peer.ID, minPenalty int)`  
   Verifies peer penalty escalation in sync/dandelion tests.
 
 1. [DONE] **ProcessBlock mandatory validation gate**
@@ -379,55 +379,55 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
    - **Suggested files:** `block_process_test.go`, `testhelpers_test.go`.
    - **Status:** implemented in Go test `TestProcessBlock_EnforcesValidationInternally` and passing via `go test`.
 
-2. **Daemon ingest reorg removes txs from all connected blocks**
+2. [DONE] **Daemon ingest reorg removes txs from all connected blocks**
    - **Scenario:** Real daemon receives competing valid branch and reorgs.
    - **Primary path:** `daemon.go` -> `processBlockData`/`handleBlock` -> `Chain.ProcessBlock` -> `reorganizeTo`.
    - **Test setup:** Mine/import valid PoW blocks on branch A and heavier branch B; include mempool txs across both branches.
    - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `mustBuildCompetingBranch`, `mustStartTestDaemon`, `mustSubmitBlockData`.
    - **Assertions:** Old-branch confirmed txs removed from chain indices, new-branch tx set is canonical, no stale confirmed entries remain.
-   - **Suggested files:** restore `daemon_reorg_mempool_test.go`.
+   - **Suggested files:** `daemon_reorg_mempool_test.go`.
 
-3. **Daemon ingest reorg requeues disconnected transactions**
+3. [DONE] **Daemon ingest reorg requeues disconnected transactions**
    - **Scenario:** Reorg disconnects blocks containing previously confirmed transactions.
    - **Primary path:** `daemon.go` reorg flow plus mempool reconciliation.
    - **Test setup:** Confirm txs on branch A, switch to heavier branch B that excludes them.
    - **Shared helpers:** `mustCreateTestChain`, `mustBuildCompetingBranch`, `mustStartTestDaemon`, `mustSubmitBlockData`.
    - **Assertions:** Eligible disconnected txs are re-added to mempool, invalid/coinbase txs are not re-added.
-   - **Suggested files:** restore `daemon_reorg_mempool_test.go` and `mempool_reorg_test.go`.
+   - **Suggested files:** `daemon_reorg_mempool_test.go`.
 
-4. **Fork-context validation for non-tip blocks**
+4. [DONE] **Fork-context validation for non-tip blocks**
    - **Scenario:** Feed a validly-encoded fork block with wrong difficulty or MTP for its parent branch.
    - **Primary path:** `block.go` -> `ValidateBlockP2P` -> `validateBlockWithContext` -> `expectedDifficultyFromParent`/`medianTimestampFromParent`.
    - **Test setup:** Construct side branch with enough history for MTP window and LWMA context; alter fork-block header difficulty/time.
    - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `mustBuildCompetingBranch`.
    - **Assertions:** Rejected on fork path (not only tip-extension path).
-   - **Suggested files:** `tests.go` or `block_validation_test.go`.
+   - **Suggested files:** `block_validation_test.go`.
 
-5. **Finality-depth guard blocks deep reorg**
+5. [DONE] **Finality-depth guard blocks deep reorg**
    - **Scenario:** Competing chain attempts to fork below finalized boundary.
    - **Primary path:** `block.go` -> `ProcessBlock`/`reorganizeTo` -> `enforceReorgFinalityLocked`.
    - **Test setup:** Build main chain beyond `MaxReorgDepth`, then present heavier fork diverging before finality boundary.
    - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `mustBuildCompetingBranch`, `assertTipUnchanged`.
    - **Assertions:** Reorg rejected deterministically; canonical tip unchanged.
-   - **Suggested files:** restore/expand `sync_reorg_test.go` and chain reorg tests.
+   - **Suggested files:** `block_finality_test.go`.
 
-6. **Sync invalid-block penalties across all rejection branches**
+6. [DONE] **Sync invalid-block penalties across all rejection branches**
    - **Scenario:** Peer sends invalid new block, invalid orphan parent data, and invalid hash-fetch response.
    - **Primary path:** `p2p/sync.go` -> `handleNewBlock`, `recoverOrphanChain`, `fetchBlockByHashFromAnyPeer`, ordered sync processing.
    - **Test setup:** Use real sync manager + peer objects with malformed payloads (empty, undecodable, hash mismatch, invalid block).
    - **Shared helpers:** `mustStartLinkedTestNodes`, `mustCraftMalformedTxVariant`, `assertPeerPenalized`.
    - **Assertions:** Peer scoring/penalty applies in each branch; retry paths do not silently skip penalties.
-   - **Suggested files:** restore/expand `p2p/sync_recovery_test.go`.
+   - **Suggested files:** `p2p/sync_penalty_test.go`.
 
-7. **Protocol/message-class payload caps enforced pre-decode**
+7. [DONE] **Protocol/message-class payload caps enforced pre-decode**
    - **Scenario:** Oversized payloads on block/tx/dandelion/sync/PEX streams.
    - **Primary path:** `p2p/util.go` (`readLengthPrefixedWithLimit`, `readMessageWithLimit`) and callers in `p2p/node.go`, `p2p/dandelion.go`, `p2p/sync.go`, `p2p/pex.go`.
    - **Test setup:** Send payloads 1 byte over each class cap using real stream handlers.
    - **Shared helpers:** `mustStartLinkedTestNodes`, `mustSendLengthPrefixedPayload`.
    - **Assertions:** Fast reject before decode/allocation-heavy paths; connection/handler returns expected error.
-   - **Suggested files:** `p2p/*_limits_test.go`.
+   - **Suggested files:** `p2p/util_test.go`.
 
-8. **Sync response array-count and mempool budget enforcement**
+8. [DONE] **Sync response array-count and mempool budget enforcement**
    - **Scenario:** Header/block/mempool responses exceed item counts or byte budgets.
    - **Primary path:** `p2p/sync.go` (`ensureJSONArrayMaxItems`, `trimByteSliceBatch`, fetch handlers).
    - **Test setup:** Return oversized JSON arrays and oversized decoded `[][]byte` batches from real sync response handlers.
@@ -435,23 +435,23 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
    - **Assertions:** Over-limit responses rejected or trimmed as designed; processing count/bytes stay within caps.
    - **Suggested files:** `p2p/sync_limits_test.go`.
 
-9. **Canonical ring-member enforcement on main chain only**
+9. [DONE] **Canonical ring-member enforcement on main chain only**
    - **Scenario:** Transaction ring references outputs that exist in storage but are reorged out of active chain.
    - **Primary path:** `transaction.go` `ValidateTransaction` callback, `block.go` `IsCanonicalRingMember`/`isOutputCanonicalOnMainChainLocked`.
    - **Test setup:** Create outputs on branch A, reorg to branch B, submit tx using A-only ring members.
    - **Shared helpers:** `mustCreateTestChain`, `mustBuildCompetingBranch`, `mustCraftMalformedTxVariant`.
    - **Assertions:** Transaction rejected in both mempool admission and block validation.
-   - **Suggested files:** `transaction_validation_test.go` + chain reorg fixtures.
+   - **Suggested files:** `transaction_validation_test.go`.
 
-10. **FFI wrapper zero-length guards cannot panic**
+10. [DONE] **FFI wrapper zero-length guards cannot panic**
     - **Scenario:** Submit txs with empty proof/signature/message slices.
     - **Primary path:** `crypto.go` `VerifyRangeProof`, `VerifyRing`, `VerifyRingCT` via `transaction.go` `ValidateTransaction`.
     - **Test setup:** Build malformed tx payloads that previously reached `&slice[0]`.
     - **Shared helpers:** `mustCraftMalformedTxVariant`, `mustCreateTestChain`.
     - **Assertions:** Validation returns error (no panic/crash), node continues processing subsequent valid txs.
-    - **Suggested files:** `transaction_validation_test.go` and `crypto_ffi_guard_test.go`.
+    - **Suggested files:** `crypto_ffi_guard_test.go`.
 
-11. **Dandelion realism: stem sanity, cache cap, fluff routing**
+11. [DONE] **Dandelion realism: stem sanity, cache cap, fluff routing**
     - **Scenario:** Inbound stem malformed tx, high-volume unique tx spam, and inbound fluff on `ProtocolTx`.
     - **Primary path:** `p2p/dandelion.go` (`HandleStemStream`, `handleStemTx`, `HandleFluffTx`) and `p2p/node.go` (`handleTxStream`).
     - **Test setup:** Use real node+dandelion handlers; feed malformed stem payloads and >`txCacheSize` unique txs.
@@ -459,7 +459,7 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Assertions:** Malformed stem penalized and dropped; cache never exceeds cap; fluff path goes through `HandleFluffTx` semantics.
     - **Suggested files:** `p2p/dandelion_integration_test.go`.
 
-12. **Wallet unlock brute-force controls in API handler**
+12. [DONE] **Wallet unlock brute-force controls in API handler**
     - **Scenario:** Repeated wrong-password unlock attempts from same client IP.
     - **Primary path:** `api_handlers.go` `handleUnlock` and `api_server.go` unlock attempt tracker.
     - **Test setup:** Real HTTP handler test with repeated requests; no mocked tracker.
@@ -467,26 +467,26 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Assertions:** Progressive delay/backoff observed, `429` and `Retry-After` enforced, success resets state.
     - **Suggested files:** `api_unlock_test.go`.
 
-13. **Banned peer admission filtering at host layer**
+13. [DONE] **Banned peer admission filtering at host layer**
     - **Scenario:** Known banned peer attempts reconnect.
     - **Primary path:** `p2p/node.go` host setup with `libp2p.ConnectionGater`, `p2p/gater.go` interceptors.
     - **Test setup:** Two real libp2p nodes; ban one peer and attempt dial/reconnect.
     - **Shared helpers:** `mustStartLinkedTestNodes`.
     - **Assertions:** Connection denied by gater path; peer cannot maintain session through normal admission.
-    - **Suggested files:** `p2p/gater_integration_test.go`.
+    - **Suggested files:** `p2p/gater_test.go`.
 
-14. [PARTIAL] **Mempool boundary rejects non-admissible classes**
+14. [DONE] **Mempool boundary rejects non-admissible classes**
     - **Scenario:** Submit coinbase tx directly to mempool and through network tx ingest.
     - **Primary path:** `mempool.go` `AddTransaction`, daemon tx ingestion path.
     - **Test setup:** Generate real coinbase tx object; attempt direct add and network-path add.
     - **Shared helpers:** `mustCreateTestChain`, `mustStartTestDaemon`.
     - **Assertions:** Explicit rejection error in both ingress routes; mempool contents unchanged.
-    - **Suggested files:** `mempool_test.go` and daemon tx ingest tests.
-    - **Status:** direct mempool path implemented in `TestMempoolRejectsCoinbaseTransaction` (Go test). Daemon ingress variant pending.
+    - **Suggested files:** `mempool_test.go` and daemon tx ingest tests (`daemon_tx_test.go`).
+    - **Status:** implemented in `TestMempoolRejectsCoinbaseTransaction` and `TestDaemonTxIngestRejectsCoinbaseTransaction` (Go tests).
 
 ### Deferred test restoration after bug crunch
 
-- Rebuild deleted `daemon_reorg_mempool_test.go` coverage around daemon ingest + reorg mempool reconciliation.
-- Rebuild deleted `sync_reorg_test.go` coverage around deep reorg sync recovery and near-tip overlap behavior.
-- Rebuild deleted `mempool_reorg_test.go` coverage for mempool connect/disconnect behavior across reorganizations.
-- Rebuild deleted `p2p/sync_recovery_test.go` coverage for orphan backfill and sync-manager recovery flow.
+- [DONE] Rebuilt `daemon_reorg_mempool_test.go` coverage around daemon ingest + reorg mempool reconciliation.
+- [DONE] Rebuilt `p2p/sync_reorg_test.go` coverage around near-tip overlap behavior (sync start overlap window).
+- [DONE] Rebuilt `mempool_reorg_test.go` coverage for mempool connect/disconnect behavior across reorganizations.
+- [DONE] Rebuilt `p2p/sync_recovery_test.go` coverage for orphan backfill and sync-manager recovery flow.
