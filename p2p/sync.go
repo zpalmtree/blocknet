@@ -111,10 +111,18 @@ type SyncManager struct {
 	syncStartTime  time.Time
 	syncTarget     uint64            // Target height we're syncing to
 	syncProgress   uint64            // Current height we've processed to
-	downloadBuffer map[uint64][]byte // Buffer for out-of-order blocks
+	downloadBuffer map[uint64]DownloadedBlock // Buffer for out-of-order blocks
 
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+func (sm *SyncManager) penalizeInvalidBlockPeer(pid peer.ID, reason string) {
+	if pid == "" || sm.node == nil {
+		return
+	}
+	// Invalid block proof/data is severe misbehavior: deterministic immediate ban path.
+	sm.node.PenalizePeer(pid, ScorePenaltyMisbehave, reason)
 }
 
 // SyncConfig configures the sync manager
@@ -152,7 +160,7 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		isDuplicateError:  cfg.IsDuplicateError,
 		getBlockMeta:      cfg.GetBlockMeta,
 		getBlockHash:      cfg.GetBlockHash,
-		downloadBuffer:    make(map[uint64][]byte),
+		downloadBuffer:    make(map[uint64]DownloadedBlock),
 	}
 	if cfg.FetchBlocksByHash != nil {
 		sm.fetchBlocksByHash = cfg.FetchBlocksByHash
@@ -293,6 +301,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 	if sm.processBlock != nil {
 		if err := sm.processBlock(data); err != nil {
+			if !sm.isDuplicateErr(err) && !sm.isOrphanErr(err) {
+				sm.penalizeInvalidBlockPeer(from, "invalid new block announcement")
+			}
 			return // duplicate, orphan, or invalid — don't relay
 		}
 		// Notify daemon (miner restart, wallet subscribers)
@@ -501,7 +512,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	}
 	sm.syncStartTime = time.Now()
 	sm.syncTarget = targetHeight
-	sm.downloadBuffer = make(map[uint64][]byte) // Reset buffer
+	sm.downloadBuffer = make(map[uint64]DownloadedBlock) // Reset buffer
 	sm.mu.Unlock()
 
 	defer func() {
@@ -510,7 +521,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 		sm.syncPeer = ""
 		sm.syncTarget = 0
 		sm.syncProgress = 0
-		sm.downloadBuffer = make(map[uint64][]byte) // Clear buffer
+		sm.downloadBuffer = make(map[uint64]DownloadedBlock) // Clear buffer
 		sm.mu.Unlock()
 	}()
 
@@ -584,13 +595,20 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	go func() {
 		defer close(processorDone)
 		for nextHeight <= targetHeight {
+			var blockData []byte
+			var sourcePeer peer.ID
+
 			// Try to get block from buffer first
 			sm.mu.Lock()
-			blockData, inBuffer := sm.downloadBuffer[nextHeight]
+			buffered, inBuffer := sm.downloadBuffer[nextHeight]
 			if inBuffer {
 				delete(sm.downloadBuffer, nextHeight)
 			}
 			sm.mu.Unlock()
+			if inBuffer {
+				blockData = buffered.Data
+				sourcePeer = buffered.Peer
+			}
 
 			if !inBuffer {
 				// Wait for block to arrive
@@ -598,10 +616,11 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 				case block := <-blockChan:
 					if block.Height == nextHeight {
 						blockData = block.Data
+						sourcePeer = block.Peer
 					} else {
 						// Out of order - buffer it
 						sm.mu.Lock()
-						sm.downloadBuffer[block.Height] = block.Data
+						sm.downloadBuffer[block.Height] = block
 						sm.mu.Unlock()
 						continue
 					}
@@ -639,7 +658,10 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 					if len(rescue) > 1 {
 						sm.mu.Lock()
 						for i := 1; i < len(rescue); i++ {
-							sm.downloadBuffer[nextHeight+uint64(i)] = rescue[i]
+							sm.downloadBuffer[nextHeight+uint64(i)] = DownloadedBlock{
+								Height: nextHeight + uint64(i),
+								Data:   rescue[i],
+							}
 						}
 						sm.mu.Unlock()
 					}
@@ -648,6 +670,11 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 			// Process block (with orphan recovery for reorg sync).
 			if err := sm.ProcessBlockWithRecoveryCtx(ctx, blockData, peers); err != nil {
+				// Non-orphan rejection here indicates invalid block proof/data.
+				// Attribute to source peer when available and penalize deterministically.
+				if sourcePeer != "" && !sm.isOrphanErr(err) && !sm.isDuplicateErr(err) {
+					sm.penalizeInvalidBlockPeer(sourcePeer, "invalid block during sync")
+				}
 				log.Printf("[sync] block %d failed: %v", nextHeight, err)
 				return
 			}
@@ -862,6 +889,7 @@ outer:
 
 				// This peer returned hash-matching data that still fails validation.
 				// Keep trying other peers for the same parent hash before failing.
+				sm.penalizeInvalidBlockPeer(sourcePeer, "invalid parent block data during orphan recovery")
 				invalidPeers[sourcePeer] = struct{}{}
 				lastProcessErr = err
 				continue
@@ -934,15 +962,18 @@ func (sm *SyncManager) fetchBlockByHashFromAnyPeer(
 				return
 			}
 			if len(blocks) == 0 || len(blocks[0]) == 0 {
+				sm.penalizeInvalidBlockPeer(p, fmt.Sprintf("empty block response for requested hash %x", hash[:8]))
 				ch <- result{peer: p, err: fmt.Errorf("peer %s returned no blocks for %x", p, hash[:8])}
 				return
 			}
 			blockHash, err := sm.getBlockHash(blocks[0])
 			if err != nil {
+				sm.penalizeInvalidBlockPeer(p, fmt.Sprintf("undecodable block response for requested hash %x", hash[:8]))
 				ch <- result{peer: p, err: fmt.Errorf("peer %s returned undecodable block for %x: %w", p, hash[:8], err)}
 				return
 			}
 			if blockHash != hash {
+				sm.penalizeInvalidBlockPeer(p, fmt.Sprintf("mismatched block hash response for requested hash %x", hash[:8]))
 				ch <- result{peer: p, err: fmt.Errorf("peer %s returned mismatched block hash %x for %x", p, blockHash[:8], hash[:8])}
 				return
 			}

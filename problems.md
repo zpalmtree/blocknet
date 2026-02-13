@@ -70,23 +70,31 @@ This file is a live backlog of negative findings only.
    - **What changed:** Added hard caps in `findTxBoundary` derived from protocol constants (`maxInputs=256`, `maxOutputs=256`, `maxRingSize=RingSize` (16), `maxProofSize=1024` per Bulletproof buffer, `maxSigSize=96+64*RingSize` (1120) per RingCT CLSAG buffer); each field is checked immediately after decode and returns `len(data)` (no valid boundary) on violation, preventing CPU burn and malformed-tail parsing. Values are tighter than `DeserializeTx`'s looser local caps.  
    - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
-7. `high` - Expensive `submitblock` path has no route-level abuse throttling  
+7. [DONE] `high` - Expensive `submitblock` path has no route-level abuse throttling  
    - **Location:** `api_handlers.go` (`handleSubmitBlock`)  
    - **Problem:** PoW verification is expensive; endpoint lacks explicit per-client/per-window throttling.  
    - **Impact:** Authenticated abuse can degrade node responsiveness materially.  
    - **Required fix:** Add token/IP bucket rate limit + concurrent validation cap for this route.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Added route-scoped abuse controls for `POST /api/mining/submitblock`: per-client token-bucket limiting keyed by request IP (`2 req/s`, burst `4`, stale-entry TTL cleanup) plus a bounded concurrent validation gate (`2` in-flight submits). Over-limit and saturated requests now fail fast with `429` before calling `SubmitBlock`.  
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
-8. `high` - Destructive purge endpoint password gate can be weakened by server state  
+8. [WONTFIX] `high` - Destructive purge endpoint password gate can be weakened by server state  
    - **Location:** `api_handlers.go` (`handlePurgeData`)  
    - **Problem:** Password compare is against server-held byte slice state; if not initialized as expected, it can degrade second-factor semantics.  
    - **Impact:** Inconsistent protection for chain-destructive operation.  
    - **Required fix:** Require non-empty loaded wallet state + non-empty password state, and reject purge otherwise; prefer dedicated admin secret separate from wallet password.
+   - **Status:** wontfix (2026-02-12)  
+   - **Rationale:** Enforcing wallet-loaded/password-state preconditions blocks expected walletless `--daemon` purge behavior, which is required for this deployment model.  
 
-9. `high` - Invalid-block senders are not aggressively penalized in all sync failure branches  
+9. [DONE] `high` - Invalid-block senders are not aggressively penalized in all sync failure branches  
    - **Location:** `p2p/sync.go` (`handleNewBlock`, recovery/retry paths)  
    - **Problem:** Repeated invalid block delivery can be retried/ignored without deterministic peer penalty escalation.  
    - **Impact:** Malicious peers can repeatedly consume verification resources.  
    - **Required fix:** Penalize/ban policy on invalid block proof/data across all rejection branches.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Added deterministic invalid-block penalties in sync paths: `handleNewBlock` now penalizes non-duplicate/non-orphan invalid announcements; orphan-recovery now penalizes peers that return hash-matching parent blocks failing validation; and block-by-hash recovery fetch now penalizes empty/undecodable/mismatched-hash responses before trying other peers. Added source-peer tracking in sync download buffering so non-orphan block rejection during ordered sync processing can penalize the delivering peer when provenance is known.  
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 ### Medium
 

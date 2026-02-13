@@ -1,6 +1,6 @@
 module blocknet
 
-go 1.25.5
+go 1.26
 
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect

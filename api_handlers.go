@@ -739,6 +739,20 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 // handleSubmitBlock accepts a solved block from pool mining and adds it to the chain.
 // POST /api/mining/submitblock
 func (s *APIServer) handleSubmitBlock(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !s.submitBlockLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "submitblock rate limit exceeded")
+		return
+	}
+
+	select {
+	case s.submitBlockSem <- struct{}{}:
+		defer func() { <-s.submitBlockSem }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "submitblock busy, retry later")
+		return
+	}
+
 	var block Block
 	if err := json.NewDecoder(r.Body).Decode(&block); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -790,6 +804,16 @@ func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	// Fail closed if destructive auth state is not initialized.
+	if s.wallet == nil {
+		writeError(w, http.StatusServiceUnavailable, "purge unavailable: no wallet loaded")
+		return
+	}
+	if len(s.password) == 0 {
+		writeError(w, http.StatusServiceUnavailable, "purge unavailable: password state not initialized")
 		return
 	}
 

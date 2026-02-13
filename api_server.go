@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"blocknet/wallet"
+	"golang.org/x/time/rate"
 )
 
 // APIServer serves the authenticated JSON API for GUI wallets.
@@ -28,17 +29,68 @@ type APIServer struct {
 
 	// Back-reference to CLI for wallet hot-loading in daemon mode
 	cli *CLI
+
+	// Route-scoped abuse controls for expensive block validation.
+	submitBlockLimiter *perIPLimiter
+	submitBlockSem     chan struct{}
+}
+
+type perIPLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*ipClientLimiter
+	limit   rate.Limit
+	burst   int
+	ttl     time.Duration
+}
+
+type ipClientLimiter struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+func newPerIPLimiter(limit rate.Limit, burst int, ttl time.Duration) *perIPLimiter {
+	return &perIPLimiter{
+		clients: make(map[string]*ipClientLimiter),
+		limit:   limit,
+		burst:   burst,
+		ttl:     ttl,
+	}
+}
+
+func (l *perIPLimiter) allow(ip string) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Opportunistic cleanup keeps map bounded without extra goroutines.
+	for key, client := range l.clients {
+		if now.Sub(client.lastSeen) > l.ttl {
+			delete(l.clients, key)
+		}
+	}
+
+	client, ok := l.clients[ip]
+	if !ok {
+		client = &ipClientLimiter{
+			limiter: rate.NewLimiter(l.limit, l.burst),
+		}
+		l.clients[ip] = client
+	}
+	client.lastSeen = now
+	return client.limiter.Allow()
 }
 
 // NewAPIServer creates a new API server. wallet and scanner may be nil
 // for public-only mode (e.g. seed node running --explorer).
 func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dataDir string, password []byte) *APIServer {
 	return &APIServer{
-		daemon:   daemon,
-		wallet:   w,
-		scanner:  scanner,
-		dataDir:  dataDir,
-		password: password,
+		daemon:             daemon,
+		wallet:             w,
+		scanner:            scanner,
+		dataDir:            dataDir,
+		password:           password,
+		submitBlockLimiter: newPerIPLimiter(rate.Limit(2), 4, 10*time.Minute),
+		submitBlockSem:     make(chan struct{}, 2),
 	}
 }
 
@@ -125,4 +177,15 @@ func maxBodySize(next http.Handler, bytes int64) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, bytes)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
+	}
+	return "unknown"
 }
