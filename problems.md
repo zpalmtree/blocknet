@@ -430,11 +430,14 @@ This file is a live backlog of negative findings only.
    - **Impact:** Padding unpredictability guarantees degrade in rare entropy-failure conditions and behavior diverges from strict random-padding policy.  
    - **Required fix:** Fail closed on RNG failure (return error) and bubble to transaction build path instead of deterministic fallback.
 
-61. [TODO] `high` - Transaction deserializer accepts trailing bytes after canonical parse  
+61. [DONE] `high` - Transaction deserializer accepts trailing bytes after canonical parse  
    - **Location:** `transaction.go` (`DeserializeTx`)  
    - **Problem:** Parser returns success after field decode without enforcing full-byte consumption (`off == len(data)`), allowing extra trailing data on otherwise valid transactions.  
    - **Impact:** Non-canonical payload acceptance can create relay/validation ambiguity and opens policy-bypass surface now that aux trailers were removed.  
    - **Required fix:** Enforce exact parse consumption and reject any transaction payload with trailing bytes.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** `DeserializeTx` now enforces canonical full-byte consumption and returns an error if any trailing bytes remain after parsing.  
+   - **Regression coverage:** added `TestDeserializeTxRejectsTrailingBytes` (unit test for trailing-byte rejection).
 
 62. [TODO] `medium` - `DeserializeTx` proof/signature size caps remain loose relative to practical protocol bounds  
    - **Location:** `transaction.go` (`maxProofSize`, `maxSigSize` in `DeserializeTx`)  
@@ -442,11 +445,14 @@ This file is a live backlog of negative findings only.
    - **Impact:** Residual CPU/memory pressure surface from oversized-but-accepted fields, especially under adversarial gossip/mempool load.  
    - **Required fix:** Tighten parser caps to realistic protocol ceilings and keep them aligned with signer/proof producer maxima.
 
-66. [TODO] `medium` - No end-to-end regression coverage that trailing-byte transactions are rejected on all ingress paths  
+66. [DONE] `medium` - No end-to-end regression coverage that trailing-byte transactions are rejected on all ingress paths  
    - **Location:** `transaction.go` (`DeserializeTx`), `mempool.go` (`AddTransaction`), `daemon.go` (`processTxData`, gossip tx handler path)  
    - **Problem:** Deserializer trailing-byte acceptance/rejection behavior is consensus-sensitive, but there is no full-path regression coverage from network ingest through mempool admission.  
    - **Impact:** Parser or ingress regressions can silently reintroduce non-canonical payload acceptance under real daemon paths.  
    - **Required fix:** Add integration tests that submit trailing-byte variants via direct validation, mempool, and daemon ingest handlers and assert deterministic rejection.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added daemon-ingest regression tests ensuring trailing-byte transaction payloads are rejected before mempool admission in both sync ingest (`processTxData`) and gossip ingest (`handleTx`).  
+   - **Regression coverage:** added `TestDaemonProcessTxDataRejectsTrailingBytes` and `TestDaemonHandleTxRejectsTrailingBytes`.
 
 67. [TODO] `medium` - Missing regression tests that all transaction-construction paths populate non-default memo ciphertexts  
    - **Location:** `wallet/builder.go`, `transaction.go` (`CreateTransaction`, `CreateCoinbase`)  

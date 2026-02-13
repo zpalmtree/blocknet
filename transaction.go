@@ -371,6 +371,12 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 		off += int(sigLen)
 	}
 
+	// Enforce canonical parse: successful decode must consume all bytes.
+	// Aux trailers were removed for relaunch; accepting trailing bytes is non-canonical.
+	if off != len(data) {
+		return nil, fmt.Errorf("trailing bytes after tx parse: %d", len(data)-off)
+	}
+
 	return &Transaction{
 		Version:     version,
 		TxPublicKey: txPubKey,

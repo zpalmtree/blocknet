@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+)
 
 func TestDaemonTxIngestRejectsCoinbaseTransaction(t *testing.T) {
 	chain, _, cleanup := mustCreateTestChain(t)
@@ -69,5 +74,74 @@ func TestDaemonTxIngestRejectsTamperedRingCTExternalKeyImage(t *testing.T) {
 	}
 	if got := daemon.Mempool().Size(); got != 0 {
 		t.Fatalf("mempool should remain empty after daemon ingest tampered tx attempt, size=%d", got)
+	}
+}
+
+func TestDaemonProcessTxDataRejectsTrailingBytes(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	// Minimal parseable tx bytes; cryptographic validity is irrelevant for this test.
+	tx := &Transaction{
+		Version:     1,
+		TxPublicKey: [32]byte{0xAA},
+		Inputs:      nil,
+		Outputs: []TxOutput{
+			{
+				PublicKey:       [32]byte{0xBB},
+				Commitment:      [32]byte{0xCC},
+				EncryptedAmount: [8]byte{0x01},
+			},
+		},
+		Fee: 0,
+	}
+
+	canonical := tx.Serialize()
+	withTrailing := append(append([]byte(nil), canonical...), 0xDE, 0xAD)
+
+	err := daemon.processTxData(withTrailing)
+	if err == nil {
+		t.Fatal("expected trailing-byte tx to be rejected by processTxData")
+	}
+	if !strings.Contains(err.Error(), "trailing bytes") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := daemon.Mempool().Size(); got != 0 {
+		t.Fatalf("mempool should remain empty after trailing-byte ingest, size=%d", got)
+	}
+}
+
+func TestDaemonHandleTxRejectsTrailingBytes(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	tx := &Transaction{
+		Version:     1,
+		TxPublicKey: [32]byte{0xAA},
+		Inputs:      nil,
+		Outputs: []TxOutput{
+			{
+				PublicKey:       [32]byte{0xBB},
+				Commitment:      [32]byte{0xCC},
+				EncryptedAmount: [8]byte{0x01},
+			},
+		},
+		Fee: 0,
+	}
+
+	canonical := tx.Serialize()
+	withTrailing := append(append([]byte(nil), canonical...), 0x00)
+
+	daemon.handleTx(peer.ID("peer"), withTrailing)
+	if got := daemon.Mempool().Size(); got != 0 {
+		t.Fatalf("mempool should remain empty after trailing-byte gossip ingest, size=%d", got)
 	}
 }
