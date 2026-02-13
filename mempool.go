@@ -33,12 +33,6 @@ func DefaultMempoolConfig() MempoolConfig {
 	}
 }
 
-// TxAuxData holds auxiliary metadata for a transaction (not part of TxID)
-type TxAuxData struct {
-	// PaymentIDs maps output index to encrypted payment ID
-	PaymentIDs map[int][8]byte
-}
-
 // MempoolEntry represents a transaction in the mempool
 type MempoolEntry struct {
 	Tx      *Transaction
@@ -49,7 +43,6 @@ type MempoolEntry struct {
 	Size    int        // Size in bytes
 	AddedAt time.Time  // When added to mempool
 	Height  uint64     // Block height when added
-	Aux     *TxAuxData // Optional auxiliary data (payment IDs)
 
 	// For priority queue
 	index int
@@ -90,8 +83,7 @@ func NewMempool(cfg MempoolConfig, isSpent KeyImageChecker, isCanonicalRingMembe
 }
 
 // AddTransaction adds a transaction to the mempool.
-// aux is optional auxiliary data (e.g. encrypted payment IDs).
-func (m *Mempool) AddTransaction(tx *Transaction, txData []byte, aux ...*TxAuxData) error {
+func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -155,10 +147,6 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte, aux ...*TxAuxDa
 		Size:    size,
 		AddedAt: time.Now(),
 	}
-	if len(aux) > 0 && aux[0] != nil {
-		entry.Aux = aux[0]
-	}
-
 	m.txByID[txID] = entry
 	for _, input := range tx.Inputs {
 		m.txByImage[input.KeyImage] = txID
@@ -253,18 +241,6 @@ func (m *Mempool) GetTransaction(txID [32]byte) (*Transaction, bool) {
 	return entry.Tx, true
 }
 
-// GetTransactionWithAux returns a transaction and its aux data by ID
-func (m *Mempool) GetTransactionWithAux(txID [32]byte) (*Transaction, *TxAuxData, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	entry, exists := m.txByID[txID]
-	if !exists {
-		return nil, nil, false
-	}
-	return entry.Tx, entry.Aux, true
-}
-
 // HasTransaction checks if a transaction is in the mempool
 func (m *Mempool) HasTransaction(txID [32]byte) bool {
 	m.mu.RLock()
@@ -281,10 +257,8 @@ func (m *Mempool) HasKeyImage(keyImage [32]byte) bool {
 	return exists
 }
 
-// GetTransactionsForBlock returns transactions and their aux data for mining,
-// sorted by fee rate. The returned auxData maps txID to TxAuxData for
-// transactions that carry payment IDs.
-func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) ([]*Transaction, map[[32]byte]*TxAuxData) {
+// GetTransactionsForBlock returns transactions for mining sorted by fee rate.
+func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) []*Transaction {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -305,7 +279,6 @@ func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) ([]*Transac
 
 	// Select transactions
 	result := make([]*Transaction, 0, maxCount)
-	auxData := make(map[[32]byte]*TxAuxData)
 	totalSize := 0
 
 	for _, entry := range entries {
@@ -319,12 +292,9 @@ func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) ([]*Transac
 		result = append(result, entry.Tx)
 		totalSize += entry.Size
 
-		if entry.Aux != nil {
-			auxData[entry.TxID] = entry.Aux
-		}
 	}
 
-	return result, auxData
+	return result
 }
 
 // Size returns the number of transactions in mempool
@@ -427,8 +397,6 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 		if !ok {
 			txData = tx.Serialize()
 		}
-		txData, aux := DecodeTxWithAux(txData)
-
 		// Check if any inputs are now spent (by another chain)
 		// Skip if key images are spent
 		valid := true
@@ -460,7 +428,6 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 				FeeRate: feeRate,
 				Size:    size,
 				AddedAt: time.Now(),
-				Aux:     aux,
 			}
 
 			m.txByID[txID] = entry
@@ -481,22 +448,6 @@ func (m *Mempool) GetAllTransactionData() [][]byte {
 	result := make([][]byte, 0, len(m.txByID))
 	for _, entry := range m.txByID {
 		result = append(result, entry.TxData)
-	}
-	return result
-}
-
-// GetAllTransactionDataWithAux returns all serialized transactions with aux data appended
-func (m *Mempool) GetAllTransactionDataWithAux() [][]byte {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make([][]byte, 0, len(m.txByID))
-	for _, entry := range m.txByID {
-		if entry.Aux != nil {
-			result = append(result, EncodeTxWithAux(entry.TxData, entry.Aux))
-		} else {
-			result = append(result, entry.TxData)
-		}
 	}
 	return result
 }

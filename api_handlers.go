@@ -212,7 +212,7 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		IsCoinbase  bool   `json:"is_coinbase"`
 		Spent       bool   `json:"spent"`
 		SpentHeight uint64 `json:"spent_height,omitempty"`
-		PaymentID   string `json:"payment_id,omitempty"`
+		MemoHex     string `json:"memo_hex,omitempty"`
 	}
 
 	entries := make([]outputEntry, len(outputs))
@@ -226,8 +226,8 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 			Spent:       out.Spent,
 			SpentHeight: out.SpentHeight,
 		}
-		if len(out.PaymentID) > 0 {
-			entries[i].PaymentID = hex.EncodeToString(out.PaymentID)
+		if len(out.Memo) > 0 {
+			entries[i].MemoHex = hex.EncodeToString(out.Memo)
 		}
 	}
 
@@ -249,9 +249,10 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Address   string `json:"address"`
-		Amount    uint64 `json:"amount"`     // atomic units
-		PaymentID string `json:"payment_id"` // optional hex-encoded payment ID (up to 16 chars)
+		Address  string `json:"address"`
+		Amount   uint64 `json:"amount"` // atomic units
+		MemoText string `json:"memo_text"`
+		MemoHex  string `json:"memo_hex"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -287,6 +288,27 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		Amount:      req.Amount,
 	}
 
+	var memo []byte
+	if req.MemoText != "" && req.MemoHex != "" {
+		writeError(w, http.StatusBadRequest, "provide either memo_text or memo_hex, not both")
+		return
+	}
+	if req.MemoHex != "" {
+		decoded, err := hex.DecodeString(req.MemoHex)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid memo_hex")
+			return
+		}
+		memo = decoded
+	} else if req.MemoText != "" {
+		memo = []byte(req.MemoText)
+	}
+	if len(memo) > wallet.MemoSize-4 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("memo too long: max %d bytes", wallet.MemoSize-4))
+		return
+	}
+	recipient.Memo = memo
+
 	builder := s.createTxBuilder()
 	result, err := builder.Transfer([]wallet.Recipient{recipient}, 1000, height)
 	if err != nil {
@@ -294,34 +316,8 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional payment ID
-	var paymentID []byte
-	var txAux *TxAuxData
-	if req.PaymentID != "" {
-		pid, err := hex.DecodeString(req.PaymentID)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid payment_id: must be hex")
-			return
-		}
-		if len(pid) > 8 {
-			writeError(w, http.StatusBadRequest, "payment_id too long: max 16 hex characters")
-			return
-		}
-		paymentID = pid
-
-		sharedSecret, err := DeriveStealthSecretSender(result.TxPrivKey, viewPub)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to derive shared secret")
-			return
-		}
-		encPID := wallet.EncryptPaymentID(paymentID, sharedSecret)
-		txAux = &TxAuxData{
-			PaymentIDs: map[int][8]byte{0: encPID},
-		}
-	}
-
 	// Submit via Dandelion++
-	if err := s.daemon.SubmitTransaction(result.TxData, txAux); err != nil {
+	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit transaction: "+err.Error())
 		return
 	}
@@ -339,7 +335,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		Amount:      req.Amount,
 		Fee:         result.Fee,
 		BlockHeight: height,
-		PaymentID:   paymentID,
+		Memo:        memo,
 	})
 	s.wallet.Save()
 
@@ -348,8 +344,8 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		"fee":    result.Fee,
 		"change": result.Change,
 	}
-	if len(paymentID) > 0 {
-		resp["payment_id"] = hex.EncodeToString(paymentID)
+	if len(memo) > 0 {
+		resp["memo_hex"] = hex.EncodeToString(memo)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -716,30 +712,12 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get mempool transactions sorted by fee rate
-	txs, auxData := s.daemon.Mempool().GetTransactionsForBlock(MaxBlockSize-1000, 1000)
+	txs := s.daemon.Mempool().GetTransactionsForBlock(MaxBlockSize-1000, 1000)
 
 	// Build transaction list (coinbase first)
 	allTxs := make([]*Transaction, 0, len(txs)+1)
 	allTxs = append(allTxs, coinbase.Tx)
 	allTxs = append(allTxs, txs...)
-
-	// Build BlockAuxData from mempool aux data
-	var blockAux *BlockAuxData
-	if len(auxData) > 0 {
-		paymentIDs := make(map[string][8]byte)
-		for txIdx, tx := range allTxs {
-			txID, _ := tx.TxID()
-			if aux, ok := auxData[txID]; ok {
-				for outIdx, pid := range aux.PaymentIDs {
-					key := fmt.Sprintf("%d:%d", txIdx, outIdx)
-					paymentIDs[key] = pid
-				}
-			}
-		}
-		if len(paymentIDs) > 0 {
-			blockAux = &BlockAuxData{PaymentIDs: paymentIDs}
-		}
-	}
 
 	// Build block template (nonce = 0, to be solved by pool miners)
 	block := &Block{
@@ -752,7 +730,6 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 			Nonce:      0,
 		},
 		Transactions: allTxs,
-		AuxData:      blockAux,
 	}
 
 	// Compute merkle root

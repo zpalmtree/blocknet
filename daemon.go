@@ -241,8 +241,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	node.SetBlockHandler(d.handleBlock)
 	node.SetTxHandler(d.handleTx)
 	node.SetStemSanityValidator(func(data []byte) bool {
-		txData, _ := DecodeTxWithAux(data)
-		_, err := DeserializeTx(txData)
+		_, err := DeserializeTx(data)
 		return err == nil
 	})
 
@@ -455,9 +454,7 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 
 // handleTx processes a transaction from a peer (fluff phase)
 func (d *Daemon) handleTx(from peer.ID, data []byte) {
-	txData, aux := DecodeTxWithAux(data)
-
-	tx, err := DeserializeTx(txData)
+	tx, err := DeserializeTx(data)
 	if err != nil {
 		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, "malformed transaction payload")
 		return
@@ -471,7 +468,7 @@ func (d *Daemon) handleTx(from peer.ID, data []byte) {
 		return
 	}
 
-	if err := d.mempool.AddTransaction(tx, txData, aux); err != nil {
+	if err := d.mempool.AddTransaction(tx, data); err != nil {
 		if shouldPenalizeTxGossipRejection(err) {
 			d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, fmt.Sprintf("invalid transaction: %v", err))
 		}
@@ -750,43 +747,20 @@ func (d *Daemon) collectReorgDiffBlocks(oldTip, newTip [32]byte) (disconnected [
 	return disconnected, connected
 }
 
-// txDataMapForBlock builds serialized tx payloads for a block, including
-// optional aux trailers reconstructed from block-level aux metadata.
+// txDataMapForBlock builds serialized tx payloads for a block.
 func (d *Daemon) txDataMapForBlock(block *Block) map[[32]byte][]byte {
 	if block == nil || len(block.Transactions) == 0 {
 		return nil
 	}
 
-	// Group payment IDs by transaction index.
-	auxByTxIndex := make(map[int]map[int][8]byte)
-	if block.AuxData != nil && len(block.AuxData.PaymentIDs) > 0 {
-		for key, pid := range block.AuxData.PaymentIDs {
-			var txIdx, outIdx int
-			if _, err := fmt.Sscanf(key, "%d:%d", &txIdx, &outIdx); err != nil {
-				continue
-			}
-			if txIdx < 0 || txIdx >= len(block.Transactions) || outIdx < 0 {
-				continue
-			}
-			if auxByTxIndex[txIdx] == nil {
-				auxByTxIndex[txIdx] = make(map[int][8]byte)
-			}
-			auxByTxIndex[txIdx][outIdx] = pid
-		}
-	}
-
 	txDataMap := make(map[[32]byte][]byte, len(block.Transactions))
-	for txIdx, tx := range block.Transactions {
+	for _, tx := range block.Transactions {
 		txID, err := tx.TxID()
 		if err != nil {
 			continue
 		}
 
-		txData := tx.Serialize()
-		if paymentIDs := auxByTxIndex[txIdx]; len(paymentIDs) > 0 {
-			txData = EncodeTxWithAux(txData, &TxAuxData{PaymentIDs: paymentIDs})
-		}
-		txDataMap[txID] = txData
+		txDataMap[txID] = tx.Serialize()
 	}
 
 	return txDataMap
@@ -815,24 +789,22 @@ func (d *Daemon) getBlocksByHeight(startHeight uint64, max int) ([][]byte, error
 	return blocks, nil
 }
 
-// getMempoolTxs returns all serialized transactions in the mempool (with aux data)
+// getMempoolTxs returns all serialized transactions in the mempool.
 func (d *Daemon) getMempoolTxs() [][]byte {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.mempool.GetAllTransactionDataWithAux()
+	return d.mempool.GetAllTransactionData()
 }
 
 // processTxData handles an incoming transaction from a peer
 func (d *Daemon) processTxData(data []byte) error {
-	txData, aux := DecodeTxWithAux(data)
-
-	tx, err := DeserializeTx(txData)
+	tx, err := DeserializeTx(data)
 	if err != nil {
 		return fmt.Errorf("invalid transaction: %w", err)
 	}
 
 	// Add to mempool (validates the transaction)
-	if err := d.mempool.AddTransaction(tx, txData, aux); err != nil {
+	if err := d.mempool.AddTransaction(tx, data); err != nil {
 		// Not necessarily an error - might be duplicate or already spent
 		return nil
 	}
@@ -911,7 +883,6 @@ func (d *Daemon) MinerStats() MinerStats {
 }
 
 // SubmitTransaction adds a transaction to mempool and broadcasts to peers.
-// aux is optional auxiliary data (e.g. encrypted payment IDs).
 // SubmitBlock validates a mined block, adds it to the chain, and broadcasts to peers.
 func (d *Daemon) SubmitBlock(block *Block) error {
 	d.mu.Lock()
@@ -949,30 +920,19 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 	return nil
 }
 
-func (d *Daemon) SubmitTransaction(txData []byte, aux ...*TxAuxData) error {
+func (d *Daemon) SubmitTransaction(txData []byte) error {
 	tx, err := DeserializeTx(txData)
 	if err != nil {
 		return fmt.Errorf("invalid transaction data: %w", err)
 	}
 
-	// Pass through aux data to mempool
-	var txAux *TxAuxData
-	if len(aux) > 0 {
-		txAux = aux[0]
-	}
-
 	// Validate and add to mempool
-	if err := d.mempool.AddTransaction(tx, txData, txAux); err != nil {
+	if err := d.mempool.AddTransaction(tx, txData); err != nil {
 		return fmt.Errorf("mempool rejected: %w", err)
 	}
 
 	// Broadcast via Dandelion++ for privacy.
-	// Append aux data after TX bytes so payment IDs propagate.
-	broadcastData := txData
-	if txAux != nil {
-		broadcastData = EncodeTxWithAux(txData, txAux)
-	}
-	d.node.BroadcastTx(broadcastData)
+	d.node.BroadcastTx(txData)
 
 	return nil
 }

@@ -789,5 +789,22 @@ func testSerialization() {
 	}
 	fmt.Printf("DeserializeTx rejects empty data ✓\n")
 
+	// Test 9: DeserializeTx rejects legacy output format without memo bytes
+	legacyNoMemo := make([]byte, 0, 128)
+	legacyNoMemo = append(legacyNoMemo, 0x01) // version
+	legacyNoMemo = append(legacyNoMemo, make([]byte, 32)...) // tx pubkey
+	legacyNoMemo = append(legacyNoMemo, []byte{0, 0, 0, 0}...) // input count
+	legacyNoMemo = append(legacyNoMemo, []byte{1, 0, 0, 0}...) // output count
+	legacyNoMemo = append(legacyNoMemo, make([]byte, 8)...) // fee
+	legacyNoMemo = append(legacyNoMemo, make([]byte, 32)...) // output pubkey
+	legacyNoMemo = append(legacyNoMemo, make([]byte, 32)...) // output commitment
+	legacyNoMemo = append(legacyNoMemo, make([]byte, 8)...) // encrypted amount
+	legacyNoMemo = append(legacyNoMemo, []byte{0, 0, 0, 0}...) // proof len (no memo present)
+	_, err = DeserializeTx(legacyNoMemo)
+	if err == nil {
+		log.Fatalf("DeserializeTx should reject legacy no-memo output format")
+	}
+	fmt.Printf("DeserializeTx rejects legacy no-memo format ✓\n")
+
 	fmt.Println("\n--- All serialization tests passed ---")
 }

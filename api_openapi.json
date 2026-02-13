@@ -1543,7 +1543,7 @@
           "is_coinbase": { "type": "boolean", "description": "True if this is a mining reward output" },
           "spent": { "type": "boolean", "description": "True if already used as an input" },
           "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent, 0 means unspent)" },
-          "payment_id": { "type": "string", "description": "Hex-encoded payment ID (present only if the transaction included one)" }
+          "memo_hex": { "type": "string", "description": "Hex-encoded decrypted memo payload (present only when the output carried a non-empty memo)" }
         },
         "example": {
           "txid": "c7f2e1d3a4b596870123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1567,15 +1567,20 @@
             "minimum": 1,
             "description": "Amount in atomic units (1 BNT = 100,000,000). Must not exceed spendable balance."
           },
-          "payment_id": {
+          "memo_text": {
             "type": "string",
-            "pattern": "^[a-f0-9]{1,16}$",
-            "description": "Optional hex-encoded payment ID (max 16 hex characters = 8 bytes). Encrypted in the transaction using a shared secret derived from the recipient's view key."
+            "description": "Optional UTF-8 memo text. Mutually exclusive with memo_hex. Max 124 bytes after UTF-8 encoding."
+          },
+          "memo_hex": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]*$",
+            "description": "Optional memo payload in hex. Mutually exclusive with memo_text. Max 248 hex chars (124 bytes)."
           }
         },
         "example": {
           "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-          "amount": 500000000
+          "amount": 500000000,
+          "memo_text": "invoice #8421"
         }
       },
       "SendResponse": {
@@ -1584,12 +1589,13 @@
           "txid": { "type": "string", "description": "Transaction hash (64 hex chars)" },
           "fee": { "type": "integer", "description": "Fee paid in atomic units" },
           "change": { "type": "integer", "description": "Change returned to wallet in atomic units" },
-          "payment_id": { "type": "string", "description": "Hex-encoded payment ID (present only if one was provided in the request)" }
+          "memo_hex": { "type": "string", "description": "Hex-encoded memo payload (present only if one was provided in the request)" }
         },
         "example": {
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
           "fee": 15000,
-          "change": 734850000
+          "change": 734850000,
+          "memo_hex": "696e766f696365202338343231"
         }
       },
       "BlockTemplate": {

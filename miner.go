@@ -98,9 +98,8 @@ func (m *Miner) NotifyNewBlock() {
 var errNewBlock = fmt.Errorf("new block received, restarting")
 
 // MineBlock attempts to mine a single block.
-// auxData maps txID to TxAuxData for transactions with payment IDs.
 // Returns the mined block or nil if cancelled.
-func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData map[[32]byte]*TxAuxData) (*Block, error) {
+func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction) (*Block, error) {
 	// Create coinbase transaction
 	nextHeight := m.chain.Height() + 1
 	coinbase, err := CreateCoinbase(
@@ -118,24 +117,6 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData m
 	txs = append(txs, coinbase.Tx)
 	txs = append(txs, mempool...)
 
-	// Build BlockAuxData from mempool aux data
-	var blockAux *BlockAuxData
-	if len(auxData) > 0 {
-		paymentIDs := make(map[string][8]byte)
-		for txIdx, tx := range txs {
-			txID, _ := tx.TxID()
-			if aux, ok := auxData[txID]; ok {
-				for outIdx, pid := range aux.PaymentIDs {
-					key := fmt.Sprintf("%d:%d", txIdx, outIdx)
-					paymentIDs[key] = pid
-				}
-			}
-		}
-		if len(paymentIDs) > 0 {
-			blockAux = &BlockAuxData{PaymentIDs: paymentIDs}
-		}
-	}
-
 	// Create block template
 	block := &Block{
 		Header: BlockHeader{
@@ -147,7 +128,6 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData m
 			Nonce:      0,
 		},
 		Transactions: txs,
-		AuxData:      blockAux,
 	}
 
 	// Compute merkle root
@@ -299,12 +279,11 @@ func (m *Miner) Start(ctx context.Context, blockChan chan<- *Block) {
 
 			// Get transactions from mempool
 			var txs []*Transaction
-			var auxData map[[32]byte]*TxAuxData
 			if m.mempool != nil {
-				txs, auxData = m.mempool.GetTransactionsForBlock(MaxBlockSize-1000, 1000) // Leave room for coinbase, max 1000 txs
+				txs = m.mempool.GetTransactionsForBlock(MaxBlockSize-1000, 1000) // Leave room for coinbase, max 1000 txs
 			}
 
-			block, err := m.MineBlock(mineCtx, txs, auxData)
+			block, err := m.MineBlock(mineCtx, txs)
 			if err != nil {
 				if mineCtx.Err() != nil {
 					return // Context cancelled

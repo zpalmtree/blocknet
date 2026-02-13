@@ -12,9 +12,6 @@ import (
 type BlockData struct {
 	Height       uint64
 	Transactions []TxData
-	// PaymentIDs maps "txIdx:outIdx" to encrypted payment ID bytes.
-	// Populated from BlockAuxData when available.
-	PaymentIDs map[string][8]byte
 }
 
 // TxData is the minimal tx info needed for scanning
@@ -32,6 +29,7 @@ type OutputData struct {
 	PubKey          [32]byte
 	Commitment      [32]byte
 	EncryptedAmount [8]byte
+	EncryptedMemo   [MemoSize]byte
 }
 
 // ScannerConfig holds callbacks for cryptographic operations
@@ -64,7 +62,7 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 	keys := s.wallet.Keys()
 	spendableByKeyImage := s.buildSpendableKeyImageIndex()
 
-	for txIdx, tx := range block.Transactions {
+	for _, tx := range block.Transactions {
 		// Check each output - is it ours?
 		for _, out := range tx.Outputs {
 			if s.wallet.checkStealthOutput(tx.TxPubKey, out.PubKey, keys.ViewPrivKey, keys.SpendPubKey) {
@@ -119,12 +117,10 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 					Spent:          false,
 				}
 
-				// Decrypt payment ID if present in block aux data.
-				// Coinbase outputs do not carry sender-encrypted payment IDs.
-				if !tx.IsCoinbase && block.PaymentIDs != nil {
-					auxKey := fmt.Sprintf("%d:%d", txIdx, out.Index)
-					if encPID, ok := block.PaymentIDs[auxKey]; ok {
-						owned.PaymentID = DecryptPaymentID(encPID, outputSecret)
+				// Decrypt memo from the canonical output field.
+				if !tx.IsCoinbase {
+					if memo, ok := DecryptMemo(out.EncryptedMemo, outputSecret, out.Index); ok {
+						owned.Memo = memo
 					}
 				}
 
@@ -209,54 +205,6 @@ func DeriveCoinbaseConsensusBlinding(txPubKey [32]byte, blockHeight uint64, outp
 	return blinding
 }
 
-// EncryptPaymentID encrypts a payment ID using the ECDH shared secret.
-// XORs the payment ID with bytes derived from the shared secret.
-func EncryptPaymentID(paymentID []byte, sharedSecret [32]byte) [8]byte {
-	// Derive payment ID mask from shared secret
-	h := sha3.New256()
-	h.Write([]byte("blocknet_payment_id"))
-	h.Write(sharedSecret[:])
-	mask := h.Sum(nil)
-
-	var encrypted [8]byte
-	for i := 0; i < 8 && i < len(paymentID); i++ {
-		encrypted[i] = paymentID[i] ^ mask[i]
-	}
-	// XOR is symmetric — if paymentID is shorter than 8, remaining bytes
-	// are just mask bytes, which the recipient will XOR back to zero.
-	return encrypted
-}
-
-// DecryptPaymentID decrypts an encrypted payment ID using the ECDH shared secret.
-// Returns nil if the decrypted result is all zeros (no payment ID).
-func DecryptPaymentID(encrypted [8]byte, sharedSecret [32]byte) []byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_payment_id"))
-	h.Write(sharedSecret[:])
-	mask := h.Sum(nil)
-
-	var decrypted [8]byte
-	allZero := true
-	for i := 0; i < 8; i++ {
-		decrypted[i] = encrypted[i] ^ mask[i]
-		if decrypted[i] != 0 {
-			allZero = false
-		}
-	}
-	if allZero {
-		return nil
-	}
-
-	// Trim trailing zero bytes
-	end := 8
-	for end > 0 && decrypted[end-1] == 0 {
-		end--
-	}
-	result := make([]byte, end)
-	copy(result, decrypted[:end])
-	return result
-}
-
 // BlockToScanData converts a serialized block to scanner format
 func BlockToScanData(blockJSON []byte) (*BlockData, error) {
 	var raw struct {
@@ -270,6 +218,7 @@ func BlockToScanData(blockJSON []byte) (*BlockData, error) {
 				PublicKey       [32]byte `json:"public_key"`
 				Commitment      [32]byte `json:"commitment"`
 				EncryptedAmount [8]byte  `json:"encrypted_amount"`
+				EncryptedMemo   [MemoSize]byte `json:"encrypted_memo"`
 			} `json:"outputs"`
 			Inputs []struct {
 				KeyImage [32]byte `json:"key_image"`
@@ -299,6 +248,7 @@ func BlockToScanData(blockJSON []byte) (*BlockData, error) {
 				PubKey:          out.PublicKey,
 				Commitment:      out.Commitment,
 				EncryptedAmount: out.EncryptedAmount,
+				EncryptedMemo:   out.EncryptedMemo,
 			}
 		}
 

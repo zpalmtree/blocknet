@@ -45,7 +45,7 @@ type OwnedOutput struct {
 	IsCoinbase     bool     `json:"is_coinbase"`               // True if from mining reward
 	Spent          bool     `json:"spent"`
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
-	PaymentID      []byte   `json:"payment_id,omitempty"`      // Decrypted payment ID (up to 8 bytes)
+	Memo           []byte   `json:"memo,omitempty"`            // Decrypted memo payload
 }
 
 // SendRecord tracks outgoing transaction details
@@ -56,7 +56,7 @@ type SendRecord struct {
 	Amount      uint64   `json:"amount"`                 // actual amount sent (not including fee)
 	Fee         uint64   `json:"fee"`
 	BlockHeight uint64   `json:"block_height"`           // when confirmed
-	PaymentID   []byte   `json:"payment_id,omitempty"`   // Payment ID used (plaintext)
+	Memo        []byte   `json:"memo,omitempty"`         // Memo used (plaintext)
 }
 
 // WalletData is the serializable wallet state

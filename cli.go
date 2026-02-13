@@ -473,7 +473,7 @@ Commands:%s
   status            Show node and wallet status
   balance           Show wallet balance
   address           Show receiving address
-  send <addr> <amt> [pid] Send funds (pid = payment ID hex)%s
+  send <addr> <amt> [memo|hex:<memo_hex>] Send funds with optional memo%s
   history           Show transaction history
   peers             List connected peers
   banned            List banned peers
@@ -573,20 +573,25 @@ func (c *CLI) cmdSend(args []string) error {
 	}
 
 	if len(args) < 2 {
-		return fmt.Errorf("usage: send <address> <amount> [payment_id]")
+		return fmt.Errorf("usage: send <address> <amount> [memo|hex:<memo_hex>]")
 	}
 
-	// Parse optional payment ID (up to 16 hex chars = 8 bytes)
-	var paymentID []byte
+	// Parse optional memo. Plain text is UTF-8 bytes. Hex can be passed as hex:<hex>.
+	var memo []byte
 	if len(args) >= 3 {
-		pid, err := hex.DecodeString(args[2])
-		if err != nil {
-			return fmt.Errorf("invalid payment_id: must be hex")
+		raw := args[2]
+		if strings.HasPrefix(raw, "hex:") {
+			decoded, err := hex.DecodeString(strings.TrimPrefix(raw, "hex:"))
+			if err != nil {
+				return fmt.Errorf("invalid memo hex")
+			}
+			memo = decoded
+		} else {
+			memo = []byte(raw)
 		}
-		if len(pid) > 8 {
-			return fmt.Errorf("payment_id too long: max 16 hex characters (8 bytes)")
+		if len(memo) > wallet.MemoSize-4 {
+			return fmt.Errorf("memo too long: max %d bytes", wallet.MemoSize-4)
 		}
-		paymentID = pid
 	}
 
 	// Parse recipient address (strip control characters from copy-paste)
@@ -633,6 +638,7 @@ func (c *CLI) cmdSend(args []string) error {
 		SpendPubKey: spendPub,
 		ViewPubKey:  viewPub,
 		Amount:      amount,
+		Memo:        memo,
 	}
 
 	builder := c.createTxBuilder()
@@ -642,23 +648,8 @@ func (c *CLI) cmdSend(args []string) error {
 		return fmt.Errorf("failed to build transaction: %w", err)
 	}
 
-	// Encrypt payment ID if provided
-	var txAux *TxAuxData
-	if len(paymentID) > 0 {
-		// Derive the shared secret using sender-side ECDH: txPriv * viewPub
-		// Recipient will derive the same secret via viewPriv * txPub
-		sharedSecret, err := DeriveStealthSecretSender(result.TxPrivKey, viewPub)
-		if err != nil {
-			return fmt.Errorf("failed to derive shared secret for payment ID: %w", err)
-		}
-		encPID := wallet.EncryptPaymentID(paymentID, sharedSecret)
-		txAux = &TxAuxData{
-			PaymentIDs: map[int][8]byte{0: encPID}, // output index 0 = recipient
-		}
-	}
-
 	// Submit to mempool via Dandelion++
-	if err := c.daemon.SubmitTransaction(result.TxData, txAux); err != nil {
+	if err := c.daemon.SubmitTransaction(result.TxData); err != nil {
 		return fmt.Errorf("failed to submit transaction: %w", err)
 	}
 
@@ -675,7 +666,7 @@ func (c *CLI) cmdSend(args []string) error {
 		Amount:      amount,
 		Fee:         result.Fee,
 		BlockHeight: c.daemon.Chain().Height(),
-		PaymentID:   paymentID,
+		Memo:        memo,
 	})
 
 	fmt.Printf("Transaction sent: %x\n", result.TxID[:16])
@@ -715,7 +706,7 @@ func (c *CLI) cmdHistory() {
 		height    uint64
 		color     string
 		txHash    [32]byte
-		paymentID []byte
+		memo []byte
 	}
 
 	var events []historyEvent
@@ -733,7 +724,7 @@ func (c *CLI) cmdHistory() {
 			height:    out.BlockHeight,
 			color:     green,
 			txHash:    out.TxID,
-			paymentID: out.PaymentID,
+			memo:      out.Memo,
 		})
 	}
 
@@ -756,7 +747,7 @@ func (c *CLI) cmdHistory() {
 					height:    out.SpentHeight,
 					color:     red,
 					txHash:    out.TxID,
-					paymentID: sendRecord.PaymentID,
+					memo:      sendRecord.Memo,
 				})
 				seenTxIDs[out.TxID] = true
 			}
@@ -778,9 +769,9 @@ func (c *CLI) cmdHistory() {
 			amountStr = "??? BNT"
 		}
 
-		pidStr := ""
-		if len(evt.paymentID) > 0 {
-			pidStr = " " + hex.EncodeToString(evt.paymentID)
+		memoStr := ""
+		if len(evt.memo) > 0 {
+			memoStr = " memo:" + hex.EncodeToString(evt.memo)
 		}
 
 		fmt.Printf("%s %s%-3s%s %-16s %x%s\n",
@@ -790,7 +781,7 @@ func (c *CLI) cmdHistory() {
 			reset,
 			amountStr,
 			evt.txHash,
-			pidStr,
+			memoStr,
 		)
 	}
 }
@@ -1351,11 +1342,6 @@ func blockToScanData(block *Block) *wallet.BlockData {
 		Transactions: make([]wallet.TxData, len(block.Transactions)),
 	}
 
-	// Pass through payment IDs from block aux data
-	if block.AuxData != nil && len(block.AuxData.PaymentIDs) > 0 {
-		data.PaymentIDs = block.AuxData.PaymentIDs
-	}
-
 	for i, tx := range block.Transactions {
 		txID, _ := tx.TxID()
 		data.Transactions[i] = wallet.TxData{
@@ -1371,6 +1357,7 @@ func blockToScanData(block *Block) *wallet.BlockData {
 				PubKey:          out.PublicKey,
 				Commitment:      out.Commitment,
 				EncryptedAmount: out.EncryptedAmount,
+				EncryptedMemo:   out.EncryptedMemo,
 			}
 		}
 

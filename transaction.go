@@ -4,11 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"sync"
 
+	"blocknet/wallet"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -26,6 +26,9 @@ type TxOutput struct {
 	// EncryptedAmount is the amount encrypted with ECDH shared secret
 	// The recipient can decrypt this with their view key
 	EncryptedAmount [8]byte `json:"encrypted_amount"`
+
+	// EncryptedMemo is a fixed-size encrypted memo envelope.
+	EncryptedMemo [wallet.MemoSize]byte `json:"encrypted_memo"`
 }
 
 // OwnedOutput contains the secret data the owner needs to spend an output
@@ -76,14 +79,9 @@ type Transaction struct {
 	TxPublicKey [32]byte `json:"tx_public_key"`
 }
 
-// TxID returns the transaction ID (sha3-256 of the JSON serialization).
-// This must stay JSON-based to preserve compatibility with the existing chain.
+// TxID returns the transaction ID (sha3-256 of canonical binary serialization).
 func (tx *Transaction) TxID() ([32]byte, error) {
-	data, err := json.Marshal(tx)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to marshal tx: %w", err)
-	}
-	return sha3.Sum256(data), nil
+	return sha3.Sum256(tx.Serialize()), nil
 }
 
 // IsCoinbase returns true if this is a coinbase (mining reward) transaction
@@ -97,7 +95,7 @@ func (tx *Transaction) Serialize() []byte {
 	// Calculate prefix size
 	size := 1 + 32 + 4 + 4 + 8 // version + txPubKey + inputCount + outputCount + fee
 	for _, out := range tx.Outputs {
-		size += 32 + 32 + 8 + 4 + len(out.RangeProof)
+		size += 32 + 32 + 8 + wallet.MemoSize + 4 + len(out.RangeProof)
 	}
 	// Calculate input sizes
 	for _, inp := range tx.Inputs {
@@ -133,6 +131,9 @@ func (tx *Transaction) Serialize() []byte {
 
 		copy(buf[off:], out.EncryptedAmount[:])
 		off += 8
+
+		copy(buf[off:], out.EncryptedMemo[:])
+		off += wallet.MemoSize
 
 		binary.LittleEndian.PutUint32(buf[off:], uint32(len(out.RangeProof)))
 		off += 4
@@ -180,7 +181,7 @@ func (tx *Transaction) Serialize() []byte {
 func (tx *Transaction) SigningHash() [32]byte {
 	size := 1 + 32 + 4 + 4 + 8 // version + txPubKey + inputCount + outputCount + fee
 	for _, out := range tx.Outputs {
-		size += 32 + 32 + 8 + 4 + len(out.RangeProof)
+		size += 32 + 32 + 8 + wallet.MemoSize + 4 + len(out.RangeProof)
 	}
 
 	buf := make([]byte, size)
@@ -210,6 +211,9 @@ func (tx *Transaction) SigningHash() [32]byte {
 
 		copy(buf[off:], out.EncryptedAmount[:])
 		off += 8
+
+		copy(buf[off:], out.EncryptedMemo[:])
+		off += wallet.MemoSize
 
 		binary.LittleEndian.PutUint32(buf[off:], uint32(len(out.RangeProof)))
 		off += 4
@@ -268,13 +272,13 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 	fee := binary.LittleEndian.Uint64(data[off:])
 	off += 8
 
-	// Outputs (nil when count is 0 to preserve JSON encoding compatibility)
+	// Outputs
 	var outputs []TxOutput
 	if outputCount > 0 {
 		outputs = make([]TxOutput, outputCount)
 	}
 	for i := uint32(0); i < outputCount; i++ {
-		if off+32+32+8+4 > len(data) {
+		if off+32+32+8+wallet.MemoSize+4 > len(data) {
 			return nil, fmt.Errorf("unexpected end of data in output %d", i)
 		}
 
@@ -286,6 +290,9 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 
 		copy(outputs[i].EncryptedAmount[:], data[off:off+8])
 		off += 8
+
+		copy(outputs[i].EncryptedMemo[:], data[off:off+wallet.MemoSize])
+		off += wallet.MemoSize
 
 		proofLen := binary.LittleEndian.Uint32(data[off:])
 		off += 4
@@ -302,7 +309,7 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 		off += int(proofLen)
 	}
 
-	// Inputs (nil when count is 0 to preserve JSON encoding compatibility)
+	// Inputs
 	var inputs []TxInput
 	if inputCount > 0 {
 		inputs = make([]TxInput, inputCount)
@@ -760,6 +767,8 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 			Commitment: out.commitment,
 			PublicKey:  stealthOut.OnetimePubKey,
 			RangeProof: rangeProof.Proof,
+			// Legacy builder path does not populate wallet memos.
+			EncryptedMemo: [wallet.MemoSize]byte{},
 		})
 	}
 
@@ -1113,6 +1122,10 @@ func CreateCoinbase(recipientSpendPub, recipientViewPub [32]byte, reward uint64,
 	// Encrypt with the same consensus blinding so wallet scanners can recover
 	// coinbase amounts with the deterministic consensus derivation.
 	encryptedAmount := EncryptAmount(reward, blinding, 0)
+	encryptedMemo, err := wallet.EncryptMemo(nil, blinding, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt coinbase memo: %w", err)
+	}
 
 	tx := &Transaction{
 		Version:     1,
@@ -1124,6 +1137,7 @@ func CreateCoinbase(recipientSpendPub, recipientViewPub [32]byte, reward uint64,
 				PublicKey:       stealthOut.OnetimePubKey,
 				RangeProof:      rangeProof.Proof,
 				EncryptedAmount: encryptedAmount,
+				EncryptedMemo:   encryptedMemo,
 			},
 		},
 		Fee: 0,

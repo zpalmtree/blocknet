@@ -67,7 +67,7 @@ The Rust crypto library is statically linked into the binary. No shared librarie
 status              node and wallet status
 balance             wallet balance
 address             receiving address
-send <addr> <amt>   send funds
+send <addr> <amt> [memo|hex:<memo_hex>]  send funds with optional memo
 history             transaction history
 mining start        start mining
 mining stop         stop mining
@@ -116,6 +116,8 @@ One-time stealth addresses prevent linking transactions to recipients.
 Pedersen commitments hide values. Bulletproofs prove validity without revealing amounts.
 
 Dandelion++ obscures transaction origin on the network layer.
+
+Each output carries a mandatory fixed-size encrypted memo envelope (128 bytes). Wallet/API expose memo as text or hex payload.
 
 ## license
 

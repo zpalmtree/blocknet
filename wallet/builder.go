@@ -13,6 +13,7 @@ type Recipient struct {
 	SpendPubKey [32]byte
 	ViewPubKey  [32]byte
 	Amount      uint64
+	Memo        []byte
 }
 
 // TransferResult contains the result of building a transaction
@@ -155,12 +156,17 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		}
 
 		encryptedAmount := encryptAmount(r.Amount, blinding, i)
+		encryptedMemo, err := EncryptMemo(r.Memo, sharedSecret, i)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt memo for recipient %d: %w", i, err)
+		}
 
 		outputs = append(outputs, outputData{
 			pubKey:          oneTimePub,
 			commitment:      commitment,
 			rangeProof:      rangeProof,
 			encryptedAmount: encryptedAmount,
+			encryptedMemo:   encryptedMemo,
 			blinding:        blinding,
 			amount:          r.Amount,
 		})
@@ -196,12 +202,17 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		}
 
 		encryptedAmount := encryptAmount(change, blinding, outputIndex)
+		encryptedMemo, err := EncryptMemo(nil, changeSecret, outputIndex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt memo for change output: %w", err)
+		}
 
 		outputs = append(outputs, outputData{
 			pubKey:          oneTimePub,
 			commitment:      commitment,
 			rangeProof:      rangeProof,
 			encryptedAmount: encryptedAmount,
+			encryptedMemo:   encryptedMemo,
 			blinding:        blinding,
 			amount:          change,
 		})
@@ -371,9 +382,9 @@ func serializeTxPrefix(txPubKey [32]byte, inputCount int, outputs []outputData, 
 		4 + // output count
 		8 // fee
 
-	// Each output: pubkey + commitment + encrypted_amount + range_proof_len + range_proof
+	// Each output: pubkey + commitment + encrypted_amount + encrypted_memo + range_proof_len + range_proof
 	for _, out := range outputs {
-		size += 32 + 32 + 8 + 4 + len(out.rangeProof)
+		size += 32 + 32 + 8 + MemoSize + 4 + len(out.rangeProof)
 	}
 
 	buf := make([]byte, size)
@@ -409,6 +420,9 @@ func serializeTxPrefix(txPubKey [32]byte, inputCount int, outputs []outputData, 
 
 		copy(buf[offset:], out.encryptedAmount[:])
 		offset += 8
+
+		copy(buf[offset:], out.encryptedMemo[:])
+		offset += MemoSize
 
 		binary.LittleEndian.PutUint32(buf[offset:], uint32(len(out.rangeProof)))
 		offset += 4
@@ -490,6 +504,7 @@ type outputData struct {
 	commitment      [32]byte
 	rangeProof      []byte
 	encryptedAmount [8]byte
+	encryptedMemo   [MemoSize]byte
 	blinding        [32]byte // Not serialized, just for building
 	amount          uint64   // Not serialized, just for building
 }
