@@ -763,12 +763,20 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 			return nil, fmt.Errorf("failed to create range proof: %w", err)
 		}
 
+		// Ensure memo bytes are always a real encrypted envelope (never all-zero).
+		// This builder path is legacy and does not yet implement full wallet-compatible
+		// shared-secret derivation, but we still enforce memo ciphertext uniformity by
+		// producing a padded envelope encrypted under the per-output blinding key.
+		encryptedMemo, err := wallet.EncryptMemo(nil, out.blinding, i)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt memo for output %d: %w", i, err)
+		}
+
 		tx.Outputs = append(tx.Outputs, TxOutput{
 			Commitment: out.commitment,
 			PublicKey:  stealthOut.OnetimePubKey,
 			RangeProof: rangeProof.Proof,
-			// Legacy builder path does not populate wallet memos.
-			EncryptedMemo: [wallet.MemoSize]byte{},
+			EncryptedMemo: encryptedMemo,
 		})
 	}
 
@@ -916,6 +924,15 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 		return fmt.Errorf("ring member checker is required")
 	}
 
+	// Memo ciphertext is consensus-visible but not consensus-decryptable (requires wallet secrets).
+	// Enforce only the invariants we can check deterministically without decryption.
+	var zeroMemo [wallet.MemoSize]byte
+	for i := range tx.Outputs {
+		if tx.Outputs[i].EncryptedMemo == zeroMemo {
+			return fmt.Errorf("output %d: encrypted memo must not be all-zero", i)
+		}
+	}
+
 	// Check each input
 	for i, input := range tx.Inputs {
 		// Verify ring size is exactly RingSize
@@ -1053,6 +1070,11 @@ func validateCoinbase(tx *Transaction) error {
 	}
 	if len(tx.Outputs) != 1 {
 		return fmt.Errorf("coinbase must have exactly one output")
+	}
+
+	// Same memo invariant as non-coinbase transactions.
+	if tx.Outputs[0].EncryptedMemo == ([wallet.MemoSize]byte{}) {
+		return fmt.Errorf("coinbase output 0: encrypted memo must not be all-zero")
 	}
 
 	// Verify range proofs on outputs

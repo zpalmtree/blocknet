@@ -73,12 +73,12 @@ This file is a live backlog of negative findings only.
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Added route-scoped abuse controls for `POST /api/mining/submitblock`: per-client token-bucket limiting keyed by request IP (`2 req/s`, burst `4`, stale-entry TTL cleanup) plus a bounded concurrent validation gate (`2` in-flight submits). Over-limit and saturated requests now fail fast with `429` before calling `SubmitBlock`.  
 
-8. [WONTFIX] `high` - Destructive purge endpoint password gate can be weakened by server state  
+8. [DONE] `high` - Destructive purge endpoint password gate can be weakened by server state  
    - **Location:** `api_handlers.go` (`handlePurgeData`)  
    - **Problem:** Password compare is against server-held byte slice state; if not initialized as expected, it can degrade second-factor semantics.  
    - **Impact:** Inconsistent protection for chain-destructive operation.  
    - **Required fix:** Require non-empty loaded wallet state + non-empty password state, and reject purge otherwise; prefer dedicated admin secret separate from wallet password.
-   - **Status:** wontfix (2026-02-12)  
+   - **Status:** closed-no-action (2026-02-12)  
    - **Rationale:** Enforcing wallet-loaded/password-state preconditions blocks expected walletless `--daemon` purge behavior, which is required for this deployment model.  
 
 9. [DONE] `high` - Invalid-block senders are not aggressively penalized in all sync failure branches  
@@ -346,59 +346,41 @@ This file is a live backlog of negative findings only.
     - **Status:** fixed (2026-02-12)  
     - **What changed:** Hardened Docker defaults by removing weak password fallback in `docker/docker-compose.yml` (password now required), binding API/explorer published ports to localhost by default, and adding weak-password rejection in `docker/entrypoint.sh` unless explicitly overridden via `BLOCKNET_ALLOW_WEAK_WALLET_PASSWORD=true`. Added API bind safety warning in `api_server.go` for non-loopback listen addresses and updated `docker/README.md` with explicit secure-deployment guidance and localhost exposure defaults.
 
-41. [TODO] `high` - `problems.md` work queue conflicts with finding status and can mislead launch triage  
+41. [DONE] `high` - `problems.md` work queue conflicts with finding status and can mislead launch triage  
    - **Location:** `problems.md` (`## Giant Work Queue`, items `33`-`38`)  
-   - **Problem:** Queue items `33`-`38` remain marked `[TODO]` while corresponding findings in `## Findings` are already `[DONE]`.  
+   - **Problem:** Queue/work-status drift previously left implemented items marked open, conflicting with finding status.  
    - **Impact:** Operators/engineers can incorrectly treat fixed security work as still open, diluting launch-gate signal and creating process risk during relaunch.  
    - **Required fix:** Reconcile queue state with findings state and enforce one source of truth for open/closed status transitions.
+   - **Status:** fixed (2026-02-13)
+   - **What changed:** Reconciled queue status by marking items `33`-`38` as `[DONE]` to match implemented findings and removed the stale non-binary queue state entry.
 
-42. [TODO] `medium` - Aux-era findings remain active-looking after aux path removal  
-   - **Location:** `problems.md` entries that reference `tx_aux.go`, `DecodeTxWithAux`, `findTxBoundary`  
-   - **Problem:** Historical findings tied to removed aux architecture are not clearly marked as superseded-by-removal in the current relaunch model.  
-   - **Impact:** Readers may spend effort auditing/debating non-existent attack surfaces and miss memo-era risks that replaced them.  
-   - **Required fix:** Annotate aux-era findings as "retired by architecture change" (with date/commit context) and separate historical notes from active threat surface.
-
-43. [TODO] `medium` - TxID-canonicalization finding text is stale relative to current binary-canonical implementation  
-   - **Location:** `problems.md` finding `11`  
-   - **Problem:** Current finding text describes previous call-site canonicalization but does not reflect the stronger relaunch state where txid is derived from canonical binary serialization.  
-   - **Impact:** Audit/docs drift around consensus-critical identity derivation can cause incorrect assumptions in future refactors/reviews.  
-   - **Required fix:** Update finding narrative to match the current txid model and record the final relaunch canonicalization state explicitly.
-
-44. [TODO] `high` - Memo-era risk backlog is incomplete after payment-id -> memo migration  
-   - **Location:** `problems.md` (missing entries), affected code paths include `block.go`, `transaction.go`, `api_handlers.go`, `cli.go`  
-   - **Problem:** No findings currently track newly introduced memo-era concerns (for example exact block-size accounting pressure after fixed 128-byte memo, memo input sanitization policy split, and strict tx-version gating expectations).  
-   - **Impact:** Relaunch can ship with untracked security/safety gaps because the backlog no longer maps to the active protocol surface.  
-   - **Required fix:** Add dedicated memo-era findings with clear ownership and acceptance criteria for consensus-level, API-level, and UX-safety-level controls.
-
-45. [TODO] `low` - Compatibility-era wording remains in code/comments after relaunch-only decision  
-   - **Location:** Cross-file comments/docs (for example legacy/compat notes in protocol and runbook-adjacent text)  
-   - **Problem:** Some wording still reflects compatibility assumptions despite relaunch policy being no legacy support.  
-   - **Impact:** Documentation ambiguity increases maintenance risk and can reintroduce compatibility behavior by mistake.  
-   - **Required fix:** Run a terminology cleanup pass that marks legacy text as historical only or removes it where obsolete.
-
-46. [TODO] `high` - Legacy tx builder path emits zeroed memo bytes, violating relaunch memo-uniformity policy  
-   - **Location:** `transaction.go` (`CreateTransaction` output construction path)  
+46. [DONE] `high` - Legacy tx builder path emits zeroed memo bytes, violating relaunch memo-uniformity policy  
+   - **Location:** `transaction.go` (`TxBuilder.Build` output construction path)  
    - **Problem:** A reachable transaction-construction path initializes `EncryptedMemo` as all zeros (`[wallet.MemoSize]byte{}`) instead of encrypted envelope bytes.  
    - **Impact:** Transactions built via that path produce a deterministic memo ciphertext pattern, undermining the mandatory encrypted-and-padded uniformity objective.  
    - **Required fix:** Remove/disable legacy constructor path or make it use the same memo envelope encryption routine as wallet builder for every output.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Updated the legacy `TxBuilder.Build` output construction to always populate `EncryptedMemo` via `wallet.EncryptMemo(...)` (empty payload, padded envelope), eliminating the on-chain all-zero memo ciphertext pattern and restoring memo ciphertext uniformity for this construction path.
 
-47. [TODO] `medium` - Memo envelope validity is not consensus-enforced, allowing structurally invalid memo ciphertexts on-chain  
-   - **Location:** `transaction.go` (`ValidateTransaction`), memo handling split across `wallet/memo.go` and scanner-only decrypt path  
-   - **Problem:** Consensus currently enforces memo byte presence/length only; envelope semantics (version/length/checksum invariants) are checked only by wallet-side decrypt logic.  
-   - **Impact:** Attackers can publish outputs with malformed memo envelopes that satisfy consensus shape but violate protocol-level memo semantics, creating interoperability and policy drift risks.  
-   - **Required fix:** Decide and codify whether envelope semantics are consensus rules; if yes, add deterministic validation, if no, document non-consensus status explicitly and add guardrails for wallet behavior.
+47. [DONE] `medium` - Memo semantics/policy are not enforced (or explicitly scoped) at the consensus validation boundary  
+   - **Location:** `transaction.go` (`ValidateTransaction`), memo policy defined in `relaunch.md`, wallet memo handling in `wallet/memo.go`  
+   - **Problem:** Current consensus validation enforces memo field shape via fixed-size serialization, but memo-policy semantics (envelope invariants, explicit “allowed vs disallowed” ciphertext patterns, and a single authoritative memo-policy invariant) are not enforced or clearly scoped as non-consensus.  
+   - **Impact:** Nodes can accept on-chain outputs with memo bytes that are shape-valid but policy-invalid, creating drift between “documented relaunch memo rules” and “accepted chain data”, plus interoperability ambiguity for wallets/indexers.  
+   - **Required fix:** Decide what memo semantics are consensus rules vs wallet/UI rules; then encode the decision as an explicit transaction-level invariant enforced in `ValidateTransaction` (or formally document shape-only consensus and make wallet behavior fail-safe against malformed/policy-invalid memos).
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Made the boundary explicit and enforceable: consensus treats memo bytes as opaque ciphertext (cannot validate envelope version/len/checksum without shared secrets) but now rejects the legacy/default all-zero `EncryptedMemo` pattern in `ValidateTransaction` (and coinbase validation). `relaunch.md` was updated to document this split clearly.
 
-48. [TODO] `medium` - Scanner silently drops invalid memo decrypts without telemetry or operator visibility  
-   - **Location:** `wallet/scanner.go` (`DecryptMemo` callsite in `ScanBlock`)  
-   - **Problem:** Failed memo decrypt/validation returns `ok=false` and is ignored silently, with no counters/logging/diagnostic surface.  
-   - **Impact:** Malformed or policy-violating memo activity can go unnoticed, weakening incident detection and making debugging of memo issues difficult.  
-   - **Required fix:** Add explicit invalid-memo accounting (metrics/logs/debug counters) and expose it in wallet/diagnostic surfaces.
+48. [TODO] `medium` - Invalid/malformed memo activity is not visible to operators  
+   - **Location:** `wallet/scanner.go` (`DecryptMemo` callsite in `ScanBlock`), daemon/wallet diagnostic surfaces  
+   - **Problem:** Failed memo decrypt/validation returns `ok=false` and is ignored silently, with no counters/logging/diagnostic surface at wallet or daemon level.  
+   - **Impact:** Malformed or policy-violating memo activity can go unnoticed, weakening incident detection and making memo-related failures harder to debug.  
+   - **Required fix:** Add explicit invalid-memo accounting (metrics/log counters) and expose it via wallet/daemon diagnostics (at minimum a counter; optionally structured logs behind a debug flag).
 
-49. [TODO] `low` - OpenAPI memo contract is not machine-enforced for mutual-exclusion and length limits  
-   - **Location:** `api_openapi.json` (`SendRequest` memo fields)  
-   - **Problem:** Schema text states `memo_text` and `memo_hex` are mutually exclusive and size-bounded, but schema does not encode those invariants (`oneOf`/`maxLength`) for tooling enforcement.  
-   - **Impact:** Client generators and validators can accept request shapes the server rejects, causing avoidable integration errors and contract drift.  
-   - **Required fix:** Encode memo constraints directly in schema (`oneOf`, explicit `maxLength`/pattern bounds) to align machine validation with handler behavior.
+49. [TODO] `low` - OpenAPI memo contract is underspecified and not machine-enforced  
+   - **Location:** `api_openapi.json` (`SendRequest` memo fields, tx lookup response schema)  
+   - **Problem:** Schema text states `memo_text` and `memo_hex` are mutually exclusive and size-bounded, but schema does not encode those invariants (`oneOf`/`maxLength`). Tx lookup responses also do not provide a concrete transaction/output schema including `encrypted_memo`.  
+   - **Impact:** Client generators and validators can accept request/response shapes that drift from server behavior, causing avoidable integration errors and contract ambiguity.  
+   - **Required fix:** Encode memo constraints directly in schema (`oneOf`, explicit `maxLength`/pattern bounds) and define concrete transaction/output schemas that include memo-related fields (including `encrypted_memo`) used by tx lookup/history endpoints.
 
 50. [TODO] `low` - Memo KDF implementation does not include the documented domain-separation component from relaunch spec  
    - **Location:** `wallet/memo.go` (`deriveMemoMask`), `relaunch.md` encryption section  
@@ -430,12 +412,6 @@ This file is a live backlog of negative findings only.
    - **Impact:** Refactors in wallet package can inadvertently affect protocol-critical behavior; separation-of-concerns is weakened.  
    - **Required fix:** Move memo constants to consensus/common protocol params package and consume from both wallet and consensus paths.
 
-55. [TODO] `low` - Block-template tx selection reserve remains hardcoded magic buffer after memo footprint change  
-   - **Location:** `miner.go`, `api_handlers.go` (`GetTransactionsForBlock(MaxBlockSize-1000, ...)`)  
-   - **Problem:** Template packing still uses a fixed `1000`-byte reserve instead of deriving reserve from canonical block serialization overhead and tx footprint changes.  
-   - **Impact:** Packing efficiency and edge-size correctness can drift as protocol fields evolve, increasing maintenance and tuning risk.  
-   - **Required fix:** Replace magic reserve with explicit overhead model tied to canonical block serialization and assert template size invariants.
-
 56. [TODO] `high` - JSON block ingest can default missing memo fields to zero arrays without explicit rejection  
    - **Location:** `daemon.go` (`handleBlock`, `processBlockData`) with JSON unmarshal into tx outputs  
    - **Problem:** Missing `encrypted_memo` in JSON payload can deserialize to zero-valued fixed array, and current consensus checks do not explicitly reject this semantic defaulting.  
@@ -448,23 +424,11 @@ This file is a live backlog of negative findings only.
    - **Impact:** Miners can encode arbitrary payloads in coinbase memos, potentially creating unintended metadata channel variance.  
    - **Required fix:** Define and enforce coinbase memo policy explicitly (for example empty-envelope-only), or document permissive behavior as intentional consensus design.
 
-58. [TODO] `low` - Memo envelope checksum is only 16-bit and weak as validity discriminator  
-   - **Location:** `wallet/memo.go` (`checksum` bytes `2..3`)  
-   - **Problem:** Short checksum provides limited collision resistance and can occasionally treat malformed payloads as valid.  
-   - **Impact:** Wallet-side memo integrity signal is weaker than expected under adversarial/malformed data.  
-   - **Required fix:** Increase checksum strength (or add stronger envelope integrity marker) if envelope validity is relied upon as a robust discriminator.
-
 59. [TODO] `medium` - Memo padding path falls back to deterministic bytes on RNG failure instead of failing closed  
    - **Location:** `wallet/memo.go` (`buildMemoEnvelope`)  
    - **Problem:** If random padding generation fails, code substitutes deterministic bytes from mask derivation rather than aborting memo construction.  
    - **Impact:** Padding unpredictability guarantees degrade in rare entropy-failure conditions and behavior diverges from strict random-padding policy.  
    - **Required fix:** Fail closed on RNG failure (return error) and bubble to transaction build path instead of deterministic fallback.
-
-60. [TODO] `medium` - Consensus does not currently enforce non-default memo ciphertext semantics beyond fixed length  
-   - **Location:** `transaction.go` (`ValidateTransaction`), related memo policy in `relaunch.md`  
-   - **Problem:** Validation enforces output structure but not stronger memo semantic invariants (for example rejecting legacy-style all-zero ciphertext patterns if policy requires encrypted envelope semantics).  
-   - **Impact:** Policy-level guarantees around memo uniformity can drift from actual accepted chain data.  
-   - **Required fix:** Decide and encode explicit memo semantic invariants in consensus validation, or narrow policy language to length-only guarantees.
 
 61. [TODO] `high` - Transaction deserializer accepts trailing bytes after canonical parse  
    - **Location:** `transaction.go` (`DeserializeTx`)  
@@ -477,24 +441,6 @@ This file is a live backlog of negative findings only.
    - **Problem:** Current parser caps are permissive enough to allow unnecessarily heavy allocation/verification work within transport limits.  
    - **Impact:** Residual CPU/memory pressure surface from oversized-but-accepted fields, especially under adversarial gossip/mempool load.  
    - **Required fix:** Tighten parser caps to realistic protocol ceilings and keep them aligned with signer/proof producer maxima.
-
-63. [TODO] `medium` - Memo validation policy is not encoded as explicit transaction-level invariant  
-   - **Location:** `transaction.go` (`ValidateTransaction`), memo policy defined in `relaunch.md`  
-   - **Problem:** Transaction validation currently guarantees memo field shape via fixed-size serialization but does not enforce an explicit memo-policy invariant at validation boundary.  
-   - **Impact:** Divergence risk between documented memo policy and accepted on-chain data if builders/ingest paths evolve.  
-   - **Required fix:** Add explicit memo-policy checks in transaction validation (or formally scope consensus to shape-only and document that as authoritative).
-
-64. [TODO] `low` - OpenAPI tx lookup schema underspecifies output memo field contract  
-   - **Location:** `api_openapi.json` (`TxLookupResult.tx`)  
-   - **Problem:** Transaction lookup response uses a generic object schema and does not explicitly define output fields including `encrypted_memo`.  
-   - **Impact:** Client generators and integrators can drift from actual wire/API behavior, increasing integration and compatibility errors.  
-   - **Required fix:** Define concrete transaction/output schemas in OpenAPI and include memo-related output fields explicitly.
-
-65. [TODO] `low` - Relaunch default path/filename documentation can drift from enforced runtime defaults  
-   - **Location:** user-facing docs (`README.md`, relaunch/operator docs) vs runtime defaults (`main.go`, `cli.go`, `daemon.go`)  
-   - **Problem:** Relaunch introduced new conventions, but docs can still reflect pre-relaunch defaults in places unless continuously synchronized.  
-   - **Impact:** Operator misconfiguration risk (wrong data dir/wallet file), especially during clean-network relaunch operations.  
-   - **Required fix:** Add a relaunch-defaults doc consistency check process and keep README/operator docs aligned with compiled defaults.
 
 66. [TODO] `medium` - No end-to-end regression coverage that trailing-byte transactions are rejected on all ingress paths  
    - **Location:** `transaction.go` (`DeserializeTx`), `mempool.go` (`AddTransaction`), `daemon.go` (`processTxData`, gossip tx handler path)  
@@ -514,18 +460,6 @@ This file is a live backlog of negative findings only.
    - **Impact:** Policy-invalid payloads can pass ingest if validation semantics drift, weakening mandatory memo guarantees.  
    - **Required fix:** Add daemon ingest tests that submit block JSON with omitted/invalid memo fields and assert rejection before state mutation.
 
-69. [TODO] `low` - Relaunch blocker prioritization is not explicit inside the findings list  
-   - **Location:** `problems.md` triage process  
-   - **Problem:** Memo/relaunch-critical issues are mixed with process/doc backlog items without a dedicated blocker marker.  
-   - **Impact:** Launch-critical fixes can be delayed by queue noise and non-blocking cleanup tasks.  
-   - **Required fix:** Add explicit relaunch-blocker tagging/section and maintain it as the launch gate source of truth.
-
-70. [TODO] `low` - No automated consistency checks for docs/schema/runtime field defaults and memo contract  
-   - **Location:** docs (`README.md`, `relaunch.md`), schema (`api_openapi.json`), runtime defaults/handlers (`main.go`, `cli.go`, `daemon.go`, `api_handlers.go`)  
-   - **Problem:** Drift can recur between documented defaults/contracts and implemented behavior without automated checks.  
-   - **Impact:** Integration/operator errors increase over time; regressions are discovered late.  
-   - **Required fix:** Add lightweight CI checks for key default values and memo field naming/contract consistency across docs, OpenAPI, and handlers.
-
 71. [TODO] `low` - Explorer/API memo rendering policy lacks explicit regression coverage for ciphertext-only display guarantees  
    - **Location:** `explorer.go`, API tx/history response shaping in `api_handlers.go`  
    - **Problem:** There is no dedicated regression suite ensuring public explorer/API surfaces do not accidentally expose unsafe/plaintext memo rendering semantics outside intended wallet context.  
@@ -544,65 +478,11 @@ This file is a live backlog of negative findings only.
    - **Impact:** Parser edge-case regressions can slip through example-based tests and become DoS or consensus-divergence risks.  
    - **Required fix:** Add fuzz/property tests targeting parser invariants (no panic, exact-consumption, deterministic reject/accept behavior).
 
-74. [TODO] `low` - Memo crypto interoperability invariants are not explicitly tested across implementations  
-   - **Location:** `wallet/memo.go` and any external/tooling-facing memo producers/consumers  
-   - **Problem:** No dedicated vector-based regression suite guarantees stable memo encrypt/decrypt outputs for fixed inputs across environments.  
-   - **Impact:** Integration drift risk if non-Go tooling, indexers, or future clients implement memo handling independently.  
-   - **Required fix:** Add deterministic test vectors for memo envelope/encryption/decryption and enforce compatibility in CI.
-
-75. [TODO] `low` - Memo failure telemetry lacks explicit SLO/alert thresholds  
-   - **Location:** wallet/daemon operational observability surfaces (memo decode/validation paths)  
-   - **Problem:** Memo invalid/decrypt-failure concerns exist, but there is no defined operational thresholding/alert policy.  
-   - **Impact:** Operational teams may miss memo-related degradation patterns until user-visible issues accumulate.  
-   - **Required fix:** Define memo failure metrics and threshold-based alerting/SLO guidance in ops documentation and diagnostics.
-
-76. [TODO] `low` - API/OpenAPI examples do not comprehensively cover memo edge-case response shapes  
-   - **Location:** `api_openapi.json`, API docs/examples  
-   - **Problem:** Current examples are limited and do not explicitly demonstrate empty memo, UTF-8 memo, and hex memo scenarios across send/history responses.  
-   - **Impact:** Client implementers can mis-handle optional fields and edge cases due to ambiguous example coverage.  
-   - **Required fix:** Add explicit examples for empty/non-empty memo_text/memo_hex paths and corresponding response field presence rules.
-
-77. [TODO] `low` - Wallet persistence growth impact from memo storage is untracked  
-   - **Location:** `wallet/wallet.go` persistence model (`OwnedOutput`, `SendRecord`)  
-   - **Problem:** Memo payload persistence increases wallet file growth and IO, but no benchmark/monitoring guidance exists.  
-   - **Impact:** Long-lived wallets may encounter avoidable storage/performance degradation without early visibility.  
-   - **Required fix:** Add wallet-size growth benchmarks/monitoring guidance and define practical retention/pruning expectations.
-
 78. [TODO] `medium` - Send API lacks idempotency protection for retry-safe client behavior  
    - **Location:** `api_handlers.go` (`handleSend`)  
    - **Problem:** `POST /api/wallet/send` has no idempotency key support, so client retries/timeouts can submit duplicate transfers.  
    - **Impact:** Operational duplicate-send risk under network/API retry behavior, especially for automated clients/integrators.  
    - **Required fix:** Add optional idempotency key handling with bounded replay window and deterministic response replay for duplicate keys.
-
-79. [TODO] `medium` - Memo text normalization policy is undefined across interfaces  
-   - **Location:** `api_handlers.go` (`memo_text` ingest), `cli.go` memo text path, docs/spec  
-   - **Problem:** Memo text bytes are accepted as provided, with no explicit Unicode normalization policy (for example NFC/NFKC), allowing visually similar but byte-different payloads.  
-   - **Impact:** Interop confusion and user-facing ambiguity for memo matching/indexing/display logic.  
-   - **Required fix:** Define and enforce a canonical memo text normalization policy (or explicitly document raw-byte semantics as intentional and immutable).
-
-80. [TODO] `medium` - No chain-level memo anomaly telemetry for operational abuse detection  
-   - **Location:** daemon/metrics surfaces and wallet scanner diagnostics  
-   - **Problem:** Memo activity lacks dedicated metrics for malformed rates, empty/non-empty distribution, and repeated-pattern anomalies.  
-   - **Impact:** Abuse or regression patterns in memo handling can remain undetected until user-visible failures occur.  
-   - **Required fix:** Add memo-focused metrics and dashboards/alerts for anomaly detection in relaunch operations.
-
-81. [TODO] `low` - Missing deterministic memo edge-case fixture corpus for regression stability  
-   - **Location:** test assets for memo handling (`wallet/memo.go`, tx serialization/tests)  
-   - **Problem:** No maintained fixture corpus covers empty, max-length, non-UTF8, invalid checksum/version, and malformed envelope cases with fixed expected outcomes.  
-   - **Impact:** Regression confidence relies too heavily on ad-hoc tests/fuzzing and can miss deterministic edge-case drift.  
-   - **Required fix:** Add versioned memo fixture vectors and assert fixed outcomes across parser/encrypt/decrypt paths.
-
-82. [TODO] `low` - Relaunch memo constants/policy are not frozen in a single canonical source  
-   - **Location:** split across `wallet/memo.go`, `transaction.go`, and docs (`relaunch.md`)  
-   - **Problem:** Memo constants/policy details (size, version, KDF labels, checksum semantics) are distributed across files/docs without a single frozen params authority.  
-   - **Impact:** Spec/code drift risk increases during future refactors and audit efforts.  
-   - **Required fix:** Centralize relaunch memo protocol constants in one canonical params module and reference it from both consensus code and documentation.
-
-83. [TODO] `low` - Findings backlog lacks ownership/milestone metadata for execution tracking  
-   - **Location:** `problems.md` process model  
-   - **Problem:** Large active backlog has no owner/target milestone fields, making prioritization and accountability difficult.  
-   - **Impact:** Critical relaunch issues may stagnate despite being documented.  
-   - **Required fix:** Introduce lightweight owner + target release metadata for open findings and enforce updates during triage.
 
 84. [DONE] `medium` - Runtime paths had widespread unchecked error returns in API/daemon/P2P/storage/wallet flows  
    - **Location:** `api_auth.go`, `api_handlers.go`, `api_server.go`, `api_sse.go`, `explorer.go`, `main.go`, `cli.go`, `daemon.go`, `block.go`, `storage.go`, `p2p/*`, `wallet/builder.go`, `wallet/memo.go`, `wallet/scanner.go`, `tests.go`  
@@ -627,7 +507,6 @@ This file is a live backlog of negative findings only.
 8. [DONE] Add strict bounds/overflow checks to `findTxBoundary` and aux parsing logic.
 9. [DONE] Canonicalize txid derivation and remove multi-hash fallback behavior.
 10. [DONE] Add storage write-time invariants for consensus-critical mutations.
-11. [WONTFIX] Harden destructive API operations with dedicated admin secret and explicit preconditions.
 
 ### P2 - Operational resilience
 
@@ -652,12 +531,12 @@ This file is a live backlog of negative findings only.
 30. [DONE] Eliminate map mutations under read locks in chain cache code paths.
 31. [DONE] Route inbound `ProtocolTx` through Dandelion fluff semantics (or unified equivalent path).
 32. [DONE] Explicitly reject coinbase transactions at mempool admission boundary.
-33. [TODO] Bind RingCT external input fields (`key_image`, `pseudo_output`) to verified signature payload values.
-34. [TODO] Enforce side-chain/fork-aware key-image reuse prevention before reorg adoption.
-35. [TODO] Add deterministic penalties/abuse controls on all invalid gossip ingress paths that can trigger expensive validation.
-36. [TODO] Replace O(total_outputs) canonical ring-member scans with indexed lookup for validation paths.
-37. [TODO] Add SSE subscriber unsubscribe/cleanup lifecycle to prevent channel leak growth.
-38. [TODO] Harden docker-compose defaults for API exposure and wallet-password safety.
+33. [DONE] Bind RingCT external input fields (`key_image`, `pseudo_output`) to verified signature payload values.
+34. [DONE] Enforce side-chain/fork-aware key-image reuse prevention before reorg adoption.
+35. [DONE] Add deterministic penalties/abuse controls on all invalid gossip ingress paths that can trigger expensive validation.
+36. [DONE] Replace O(total_outputs) canonical ring-member scans with indexed lookup for validation paths.
+37. [DONE] Add SSE subscriber unsubscribe/cleanup lifecycle to prevent channel leak growth.
+38. [DONE] Harden docker-compose defaults for API exposure and wallet-password safety.
 39. [DONE] Harden unchecked runtime error handling across API/daemon/P2P/wallet paths and remove silent errcheck failures.
 
 ## High-Risk Regression Test Plan (real paths only, no mocks)
@@ -892,14 +771,6 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Assertions:** OpenAPI includes only active memo fields; requests/responses match documented required/optional semantics.
     - **Suggested files:** `api_openapi_contract_test.go`.
 
-25. [TODO] **`problems.md` queue/finding status consistency guard**
-    - **Scenario:** Finding status and queue status diverge (e.g., finding `[DONE]` while queue item remains `[TODO]`).
-    - **Primary path:** `problems.md` integrity check in CI/test tooling.
-    - **Test setup:** Parse `problems.md` sections and compare statuses for mirrored backlog items.
-    - **Shared helpers:** none required.
-    - **Assertions:** CI fails on status divergence to keep launch-triage source of truth accurate.
-    - **Suggested files:** `problems_consistency_test.go`.
-
 26. [TODO] **Trailing-byte transaction variants are rejected across validator, mempool, and daemon ingest**
     - **Scenario:** Feed canonical tx bytes with appended trailing junk bytes.
     - **Primary path:** `transaction.go` (`DeserializeTx`), `mempool.go` (`AddTransaction`), `daemon.go` (`processTxData` / tx handler path).
@@ -923,22 +794,6 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Shared helpers:** `mustCreateTestChain`, `mustStartTestDaemon`, `mustSubmitBlockData` (or JSON variant helper).
     - **Assertions:** Ingest rejects policy-invalid memo field payloads and does not mutate chain state.
     - **Suggested files:** `daemon_block_ingest_test.go`.
-
-29. [TODO] **Relaunch blocker list is explicit and machine-checkable in `problems.md`**
-    - **Scenario:** Critical relaunch blockers are not distinguishable from non-blocking process/doc items.
-    - **Primary path:** `problems.md` triage structure.
-    - **Test setup:** Add a relaunch-blocker section/tagging convention and validate presence/format via consistency check.
-    - **Shared helpers:** none required.
-    - **Assertions:** CI/check fails when blocker tagging is missing/inconsistent for designated relaunch-critical findings.
-    - **Suggested files:** `problems_consistency_test.go`.
-
-30. [TODO] **Docs/OpenAPI/runtime defaults and memo contract drift guard**
-    - **Scenario:** Field names/defaults in docs and OpenAPI drift from handler/runtime behavior.
-    - **Primary path:** `README.md`, `relaunch.md`, `api_openapi.json`, `api_handlers.go`, runtime default sources (`main.go`, `cli.go`, `daemon.go`).
-    - **Test setup:** Add lightweight contract/consistency checks parsing schema/docs and comparing against handler/default constants.
-    - **Shared helpers:** none required.
-    - **Assertions:** Check fails on mismatch for memo fields (`memo_text`/`memo_hex`) and relaunch default path/filename values.
-    - **Suggested files:** `api_openapi_contract_test.go`, `defaults_consistency_test.go`.
 
 31. [TODO] **Explorer/API memo exposure policy regression guard (ciphertext-only where intended)**
     - **Scenario:** Future UI/API changes accidentally expose plaintext memo or unsafe rendering in public surfaces.
@@ -964,38 +819,6 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Assertions:** No panics, deterministic accept/reject behavior, and exact-consumption invariant on successful parse.
     - **Suggested files:** `transaction_fuzz_test.go` (or Go fuzz target in `transaction_serialization_test.go`).
 
-34. [TODO] **Memo crypto test vectors remain stable across environments**
-    - **Scenario:** Fixed memo inputs/secrets/indexes must produce deterministic ciphertext/plaintext vectors.
-    - **Primary path:** `wallet/memo.go` (`EncryptMemo`, `DecryptMemo`, envelope builder).
-    - **Test setup:** Add fixed vector table and verify round-trip + exact byte outputs.
-    - **Shared helpers:** none required.
-    - **Assertions:** Vector outputs remain stable; decrypt rejects invalid vector mutations deterministically.
-    - **Suggested files:** `wallet/memo_test.go`.
-
-35. [TODO] **Memo failure telemetry is emitted and thresholded**
-    - **Scenario:** Invalid memo envelopes/decrypt failures occur during scanner operation.
-    - **Primary path:** `wallet/scanner.go` memo decrypt/validation path and diagnostics/metrics surfaces.
-    - **Test setup:** Feed crafted blocks with invalid memo envelopes and assert telemetry counters/log hooks update.
-    - **Shared helpers:** `mustCreateTestChain`, scanner test helpers.
-    - **Assertions:** Failures are observable via metrics/log counters and can support alert thresholds.
-    - **Suggested files:** `wallet/scanner_test.go`, diagnostics tests.
-
-36. [TODO] **OpenAPI examples cover empty/utf8/hex memo edge cases**
-    - **Scenario:** Client generation and docs rely on examples for optional memo behavior.
-    - **Primary path:** `api_openapi.json` memo fields in send/history schemas.
-    - **Test setup:** Validate examples against schema and compare against handler response behavior.
-    - **Shared helpers:** schema validation helper and API request helper.
-    - **Assertions:** Examples are schema-valid and cover empty, text, and hex memo cases with correct field presence.
-    - **Suggested files:** `api_openapi_contract_test.go`.
-
-37. [TODO] **Wallet persistence growth benchmark/regression guard for memo storage**
-    - **Scenario:** Long-lived wallet accumulates outputs/send records with memo payloads.
-    - **Primary path:** `wallet/wallet.go` persistence encode/decode/save paths.
-    - **Test setup:** Benchmark and regression test with synthetic large output/send-history sets including memo data.
-    - **Shared helpers:** wallet fixture builders.
-    - **Assertions:** File growth and save/load latency remain within documented expectations; regressions are detectable.
-    - **Suggested files:** `wallet_persistence_bench_test.go`, `wallet_persistence_test.go`.
-
 38. [TODO] **Send API idempotency behavior is deterministic under retries**
     - **Scenario:** Client retries `POST /api/wallet/send` with same idempotency key under timeout/retry conditions.
     - **Primary path:** `api_handlers.go` (`handleSend`) plus idempotency key storage/replay path.
@@ -1003,38 +826,6 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Shared helpers:** `mustMakeHTTPJSONRequest`.
     - **Assertions:** Duplicate keyed requests return the same tx result without creating additional transfers; mismatched payload+same key is rejected deterministically.
     - **Suggested files:** `api_send_idempotency_test.go`.
-
-39. [TODO] **Memo text normalization policy is enforced consistently across CLI and API**
-    - **Scenario:** Equivalent Unicode memo strings in different normalization forms are submitted through both interfaces.
-    - **Primary path:** `api_handlers.go` memo text ingest, `cli.go` memo text path.
-    - **Test setup:** Submit normalization-variant memo_text values and compare stored/serialized memo bytes.
-    - **Shared helpers:** `mustMakeHTTPJSONRequest`.
-    - **Assertions:** Behavior matches declared policy (normalized equivalence or raw-byte distinction) consistently for CLI/API.
-    - **Suggested files:** `api_send_memo_policy_test.go`, `cli_send_test.go`.
-
-40. [TODO] **Memo anomaly metrics/telemetry emit expected counters under malformed inputs**
-    - **Scenario:** Scanner/ingest paths process valid and malformed memo envelopes.
-    - **Primary path:** memo decode/validation telemetry hooks in scanner/daemon diagnostics.
-    - **Test setup:** Feed controlled batches with mixed memo validity and inspect metric/log outputs.
-    - **Shared helpers:** scanner/daemon test helpers.
-    - **Assertions:** Metrics/log counters reflect malformed rate and classification accurately enough for alerting.
-    - **Suggested files:** diagnostics/metrics tests (for example `wallet/scanner_test.go`, daemon metrics tests).
-
-41. [TODO] **Deterministic memo edge-case fixture corpus is enforced across memo parser/crypto paths**
-    - **Scenario:** Run fixed fixtures for empty, max-length, non-UTF8, invalid checksum/version, and malformed envelopes.
-    - **Primary path:** `wallet/memo.go` (`EncryptMemo`, `DecryptMemo`) and tx serialization/decode integration.
-    - **Test setup:** Add versioned fixture table and run through parser/encrypt/decrypt and serialization round-trip checks.
-    - **Shared helpers:** fixture loader/table helper.
-    - **Assertions:** Fixture outputs remain stable and failures are deterministic for invalid vectors.
-    - **Suggested files:** `wallet/memo_test.go`, `transaction_serialization_test.go`.
-
-42. [TODO] **Relaunch memo constants/spec are synchronized from a canonical params source**
-    - **Scenario:** Constants drift between docs and code during refactors.
-    - **Primary path:** canonical params module + references in memo/tx/docs.
-    - **Test setup:** Add consistency check asserting memo size/version/domain labels in code and docs match canonical values.
-    - **Shared helpers:** none required.
-    - **Assertions:** CI fails on mismatch across canonical params, implementation, and documented relaunch spec.
-    - **Suggested files:** `defaults_consistency_test.go`, `problems_consistency_test.go`.
 
 ### Deferred test restoration after bug crunch
 

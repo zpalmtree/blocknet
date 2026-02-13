@@ -131,6 +131,8 @@ func mustCraftMalformedTxVariant(t *testing.T, kind string) []byte {
 				},
 			},
 		}
+		// Ensure we hit the intended RingCT validation branch, not memo policy.
+		tx.Outputs[0].EncryptedMemo[0] = 0x01
 		return tx.Serialize()
 	default:
 		t.Fatalf("unknown malformed tx variant: %s", kind)

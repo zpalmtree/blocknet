@@ -178,7 +178,8 @@ if status.NetworkID != expectedNetworkID || status.ChainID != expectedChainID {
 
 - Consensus MUST enforce:
   - each output includes exactly 128 memo bytes.
-  - envelope version is supported (`0x01`) after decryption by wallet logic; consensus only checks serialized size/shape.
+  - `EncryptedMemo` is not the all-zero byte array (rejects legacy/default-zero memo patterns deterministically).
+  - memo bytes are treated as opaque ciphertext at the consensus layer; consensus cannot validate envelope version/length/checksum without the per-output shared secret.
   - no aux payment-ID map/trailer is accepted in relaunch tx format.
 - Consensus MUST NOT enforce:
   - UTF-8 correctness, text policy, display policy, URL handling, bidi stripping.

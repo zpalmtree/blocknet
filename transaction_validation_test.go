@@ -89,6 +89,8 @@ func mustBuildValidRingCTBindingTestTx(t *testing.T) *Transaction {
 		},
 		Fee: 0,
 	}
+	// Ensure baseline tx satisfies memo ciphertext invariants enforced at consensus boundary.
+	tx.Outputs[0].EncryptedMemo[0] = 0x01
 
 	sigHash := tx.SigningHash()
 	ringSig, err := SignRingCT(

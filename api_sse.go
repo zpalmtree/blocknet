@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,7 +21,7 @@ func (s *APIServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Disable write timeout for this long-lived connection.
 	rc := http.NewResponseController(w)
-	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		writeError(w, http.StatusInternalServerError, "failed to initialize SSE stream")
 		return
 	}
