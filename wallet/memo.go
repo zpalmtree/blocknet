@@ -16,7 +16,7 @@ const (
 
 // EncryptMemo builds a memo envelope and encrypts it with a shared secret.
 func EncryptMemo(memo []byte, sharedSecret [32]byte, outputIndex int) ([MemoSize]byte, error) {
-	envelope, err := buildMemoEnvelope(memo, sharedSecret, outputIndex)
+	envelope, err := buildMemoEnvelope(memo)
 	if err != nil {
 		return [MemoSize]byte{}, err
 	}
@@ -58,7 +58,7 @@ func DecryptMemo(encrypted [MemoSize]byte, sharedSecret [32]byte, outputIndex in
 	return out, true
 }
 
-func buildMemoEnvelope(memo []byte, sharedSecret [32]byte, outputIndex int) ([MemoSize]byte, error) {
+func buildMemoEnvelope(memo []byte) ([MemoSize]byte, error) {
 	if len(memo) > memoPayloadMax {
 		return [MemoSize]byte{}, fmt.Errorf("memo too long: max %d bytes", memoPayloadMax)
 	}
@@ -72,10 +72,14 @@ func buildMemoEnvelope(memo []byte, sharedSecret [32]byte, outputIndex int) ([Me
 	// Use cryptographic random padding to make empty memos indistinguishable.
 	padStart := 4 + len(memo)
 	if padStart < MemoSize {
-		if _, err := rand.Read(envelope[padStart:]); err != nil {
-			// Fallback to deterministic pad in the unlikely event rand fails.
-			det := deriveMemoMask(sharedSecret, outputIndex)
-			copy(envelope[padStart:], det[:MemoSize-padStart])
+		// Fail closed: deterministic padding is observable and can leak
+		// entropy-failure conditions into ciphertext distributions.
+		n, err := rand.Read(envelope[padStart:])
+		if err != nil {
+			return [MemoSize]byte{}, fmt.Errorf("memo padding rng failure: %w", err)
+		}
+		if n != MemoSize-padStart {
+			return [MemoSize]byte{}, fmt.Errorf("memo padding rng short read: got %d want %d", n, MemoSize-padStart)
 		}
 	}
 	return envelope, nil

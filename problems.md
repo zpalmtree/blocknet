@@ -424,11 +424,13 @@ This file is a live backlog of negative findings only.
    - **Impact:** Miners can encode arbitrary payloads in coinbase memos, potentially creating unintended metadata channel variance.  
    - **Required fix:** Define and enforce coinbase memo policy explicitly (for example empty-envelope-only), or document permissive behavior as intentional consensus design.
 
-59. [TODO] `medium` - Memo padding path falls back to deterministic bytes on RNG failure instead of failing closed  
+59. [DONE] `medium` - Memo padding path falls back to deterministic bytes on RNG failure instead of failing closed  
    - **Location:** `wallet/memo.go` (`buildMemoEnvelope`)  
    - **Problem:** If random padding generation fails, code substitutes deterministic bytes from mask derivation rather than aborting memo construction.  
    - **Impact:** Padding unpredictability guarantees degrade in rare entropy-failure conditions and behavior diverges from strict random-padding policy.  
    - **Required fix:** Fail closed on RNG failure (return error) and bubble to transaction build path instead of deterministic fallback.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** `buildMemoEnvelope` now returns an error on RNG failure (or short read) instead of substituting deterministic padding bytes, so memo construction fails closed and the error bubbles via `EncryptMemo` to transaction building.
 
 61. [DONE] `high` - Transaction deserializer accepts trailing bytes after canonical parse  
    - **Location:** `transaction.go` (`DeserializeTx`)  
