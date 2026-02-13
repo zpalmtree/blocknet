@@ -13,7 +13,7 @@ This file is a live backlog of negative findings only.
 
 ### Critical
 
-1. `critical` - `Chain.ProcessBlock()` trusts callers for validation  
+1. [DONE] `critical` - `Chain.ProcessBlock()` trusts callers for validation  
    - **Location:** `block.go` (`ProcessBlock`)  
    - **Problem:** It mutates consensus state without internally enforcing full block validation. Any current/future caller that forgets pre-validation becomes a consensus backdoor.  
    - **Impact:** Invalid blocks can enter state via call-path mistakes/regressions.  
@@ -23,11 +23,14 @@ This file is a live backlog of negative findings only.
    - **Regression coverage:** added `TestProcessBlock_EnforcesValidationInternally` (direct `ProcessBlock` call rejects invalid block without external pre-validation).  
    - **Notes:** expensive daemon reorg integration tests were deferred to `Deferred Test Backlog` to preserve fix cadence.
 
-2. `critical` - `Chain.AddBlock()` / `addBlockInternal()` can write blocks without validation  
+2. [DONE] `critical` - `Chain.AddBlock()` / `addBlockInternal()` can write blocks without validation  
    - **Location:** `block.go` (`AddBlock`, `addBlockInternal`)  
    - **Problem:** Direct persistence + state updates can occur without PoW/difficulty/tx validation.  
    - **Impact:** Any non-genesis call-site mistake can inject invalid chain data.  
    - **Required fix:** Restrict to genesis-only API or force validation in this path; explicitly fail non-genesis unvalidated calls.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Removed exported `AddBlock` usage path; introduced unexported `addGenesisBlock` for empty-chain genesis init only; added explicit fail-fast guards in `addBlockInternal` to reject any non-genesis or non-empty-chain unvalidated insertion and force non-genesis flow through `ProcessBlock`.  
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 ### High
 
