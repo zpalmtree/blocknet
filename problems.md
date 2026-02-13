@@ -316,9 +316,9 @@ This file is a live backlog of negative findings only.
     - **Problem:** Invalid gossip payloads on daemon handlers are often dropped/returned without immediate sender penalty, while block validation includes expensive Argon2id work.  
     - **Impact:** Attackers can repeatedly trigger costly validation work with limited deterrence in these ingress routes.  
     - **Required fix:** Apply deterministic peer penalties/rate controls on invalid gossip at all ingress handlers, and ensure expensive-validation paths are guarded by cheap prefilters where possible.  
-    - **Status:** fixed (2026-02-12)  
-    - **What changed:** Hardened daemon gossip ingress in `daemon.go` by adding deterministic peer penalties for malformed/invalid `handleBlock` and `handleTx` payloads, while still allowing duplicate tx gossip without penalty. Added cheap block prefilters (version/size/coinbase-shape checks) before `ProcessBlock` in both direct handler and sync ingest (`processBlockData`) so clearly-invalid blocks are rejected before expensive validation paths such as PoW.  
-    - **Regression coverage:** Added `TestHandleTxPenalizesMalformedPayload` and `TestHandleBlockPenalizesCheapPrefilterFailure` in `daemon_gossip_penalty_test.go`.
+    - **Status:** fixed (2026-02-13)  
+    - **What changed:** Hardened daemon gossip ingress in `daemon.go` by adding deterministic peer penalties for malformed/invalid `handleBlock` and `handleTx` payloads, while still allowing duplicate tx gossip without penalty. Added cheap block prefilters (version/size/coinbase-shape checks) before `ProcessBlock` in both direct handler and sync ingest (`processBlockData`) so clearly-invalid blocks are rejected before expensive validation paths such as PoW. Added an explicit expensive-validation gate on gossip block handling: per-peer cooldown plus a global in-flight cap before entering `ProcessBlock`, with deterministic penalties for rate-limit/concurrency violations (`block gossip rate limit exceeded` / `block gossip validation busy`).  
+    - **Regression coverage:** Added `TestHandleTxPenalizesMalformedPayload`, `TestHandleBlockPenalizesCheapPrefilterFailure`, and `TestHandleBlockPenalizesRateLimitExceeded` in `daemon_gossip_penalty_test.go`.
 
 38. [DONE] `medium` - Ring-member canonicality check is O(total_outputs) per ring member  
     - **Location:** `block.go` (`isCanonicalRingMemberLocked`), `storage.go` (`GetAllOutputs`), `transaction.go` (`ValidateTransaction`)  

@@ -53,7 +53,18 @@ type Daemon struct {
 	// State
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// Guards expensive gossip block validation to bound CPU/RAM pressure.
+	gossipBlockGateMu      sync.Mutex
+	gossipBlockInFlight    int
+	gossipBlockLastAttempt map[peer.ID]time.Time
 }
+
+const (
+	// Keep expensive gossip validation bounded under announcement floods.
+	maxConcurrentGossipBlockValidations = 1
+	minGossipBlockValidationInterval    = 3 * time.Second
+)
 
 // DaemonConfig configures the daemon
 type DaemonConfig struct {
@@ -183,6 +194,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		stealthKeys: stealthKeys,
 		ctx:         ctx,
 		cancel:      cancel,
+		gossipBlockLastAttempt: make(map[peer.ID]time.Time),
 	}
 
 	// Create sync manager with callbacks
@@ -405,6 +417,11 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, fmt.Sprintf("block prefilter failed: %v", err))
 		return
 	}
+	if err := d.acquireGossipBlockValidationSlot(from); err != nil {
+		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyInvalid, err.Error())
+		return
+	}
+	defer d.releaseGossipBlockValidationSlot()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -501,6 +518,31 @@ func (d *Daemon) penalizeInvalidGossipPeer(pid peer.ID, penalty int, reason stri
 		return
 	}
 	d.node.PenalizePeer(pid, penalty, reason)
+}
+
+func (d *Daemon) acquireGossipBlockValidationSlot(pid peer.ID) error {
+	d.gossipBlockGateMu.Lock()
+	defer d.gossipBlockGateMu.Unlock()
+
+	now := time.Now()
+	if last, ok := d.gossipBlockLastAttempt[pid]; ok && now.Sub(last) < minGossipBlockValidationInterval {
+		return fmt.Errorf("block gossip rate limit exceeded")
+	}
+	if d.gossipBlockInFlight >= maxConcurrentGossipBlockValidations {
+		return fmt.Errorf("block gossip validation busy")
+	}
+
+	d.gossipBlockLastAttempt[pid] = now
+	d.gossipBlockInFlight++
+	return nil
+}
+
+func (d *Daemon) releaseGossipBlockValidationSlot() {
+	d.gossipBlockGateMu.Lock()
+	defer d.gossipBlockGateMu.Unlock()
+	if d.gossipBlockInFlight > 0 {
+		d.gossipBlockInFlight--
+	}
 }
 
 // Chain status callbacks for sync manager
