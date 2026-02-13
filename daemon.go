@@ -418,7 +418,7 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 		return
 	}
 	if err := d.acquireGossipBlockValidationSlot(from); err != nil {
-		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyInvalid, err.Error())
+		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, err.Error())
 		return
 	}
 	defer d.releaseGossipBlockValidationSlot()
