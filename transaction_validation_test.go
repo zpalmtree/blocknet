@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"blocknet/wallet"
 )
 
 func mustBuildValidRingCTBindingTestTx(t *testing.T) *Transaction {
@@ -227,6 +229,50 @@ func TestIsCanonicalRingMember_RejectsReorgedOutOutput(t *testing.T) {
 	}
 	if !chain.IsCanonicalRingMember(pubB, commB) {
 		t.Fatal("expected blockB output to be canonical after reorg")
+	}
+}
+
+func TestValidateTransactionRejectsUnsupportedTxVersion(t *testing.T) {
+	tx := mustBuildValidRingCTBindingTestTx(t)
+	tx.Version = 2
+
+	err := ValidateTransaction(
+		tx,
+		func(_ [32]byte) bool { return false },
+		func(_, _ [32]byte) bool { return true },
+	)
+	if err == nil {
+		t.Fatal("expected unsupported tx version to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported tx version") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCoinbaseConsensusRejectsNonEmptyMemoPayload(t *testing.T) {
+	keys, err := GenerateStealthKeys()
+	if err != nil {
+		t.Fatalf("failed to generate stealth keys: %v", err)
+	}
+	cb, err := CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, GetBlockReward(1), 1)
+	if err != nil {
+		t.Fatalf("failed to create coinbase: %v", err)
+	}
+
+	// Create a ciphertext that decrypts to a non-empty payload under the consensus blinding.
+	blinding := deriveCoinbaseConsensusBlinding(cb.Tx.TxPublicKey, 1, 0)
+	enc, err := wallet.EncryptMemo([]byte("miner-note"), blinding, 0)
+	if err != nil {
+		t.Fatalf("failed to encrypt coinbase memo payload: %v", err)
+	}
+	cb.Tx.Outputs[0].EncryptedMemo = enc
+
+	err = validateCoinbaseConsensus(cb.Tx, 1)
+	if err == nil {
+		t.Fatal("expected coinbase with non-empty memo payload to be rejected")
+	}
+	if !strings.Contains(err.Error(), "memo payload must be empty") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

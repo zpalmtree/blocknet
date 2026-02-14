@@ -8,7 +8,9 @@ import (
 	"math/big"
 	"sync"
 
+	"blocknet/protocol/params"
 	"blocknet/wallet"
+
 	"golang.org/x/crypto/sha3"
 )
 
@@ -28,7 +30,7 @@ type TxOutput struct {
 	EncryptedAmount [8]byte `json:"encrypted_amount"`
 
 	// EncryptedMemo is a fixed-size encrypted memo envelope.
-	EncryptedMemo [wallet.MemoSize]byte `json:"encrypted_memo"`
+	EncryptedMemo [params.MemoSize]byte `json:"encrypted_memo"`
 }
 
 // OwnedOutput contains the secret data the owner needs to spend an output
@@ -95,7 +97,7 @@ func (tx *Transaction) Serialize() []byte {
 	// Calculate prefix size
 	size := 1 + 32 + 4 + 4 + 8 // version + txPubKey + inputCount + outputCount + fee
 	for _, out := range tx.Outputs {
-		size += 32 + 32 + 8 + wallet.MemoSize + 4 + len(out.RangeProof)
+		size += 32 + 32 + 8 + params.MemoSize + 4 + len(out.RangeProof)
 	}
 	// Calculate input sizes
 	for _, inp := range tx.Inputs {
@@ -133,7 +135,7 @@ func (tx *Transaction) Serialize() []byte {
 		off += 8
 
 		copy(buf[off:], out.EncryptedMemo[:])
-		off += wallet.MemoSize
+		off += params.MemoSize
 
 		binary.LittleEndian.PutUint32(buf[off:], uint32(len(out.RangeProof)))
 		off += 4
@@ -181,7 +183,7 @@ func (tx *Transaction) Serialize() []byte {
 func (tx *Transaction) SigningHash() [32]byte {
 	size := 1 + 32 + 4 + 4 + 8 // version + txPubKey + inputCount + outputCount + fee
 	for _, out := range tx.Outputs {
-		size += 32 + 32 + 8 + wallet.MemoSize + 4 + len(out.RangeProof)
+		size += 32 + 32 + 8 + params.MemoSize + 4 + len(out.RangeProof)
 	}
 
 	buf := make([]byte, size)
@@ -213,7 +215,7 @@ func (tx *Transaction) SigningHash() [32]byte {
 		off += 8
 
 		copy(buf[off:], out.EncryptedMemo[:])
-		off += wallet.MemoSize
+		off += params.MemoSize
 
 		binary.LittleEndian.PutUint32(buf[off:], uint32(len(out.RangeProof)))
 		off += 4
@@ -233,9 +235,13 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 	const (
 		maxInputs     = 256
 		maxOutputs    = 256
-		maxRingSize   = 128
-		maxProofSize  = 10240
-		maxSigSize    = 131072
+		// Practical protocol ceilings:
+		// - ring size is fixed at RingSize for relaunch format
+		// - Bulletproof range proofs are bounded well below 1024 bytes in this implementation
+		// - RingCT signature is fixed-size given ringSize: 96 + 64*n
+		maxRingSize   = RingSize
+		maxProofSize  = 1024
+		maxSigSize    = 96 + 64*RingSize
 		minHeaderSize = 1 + 32 + 4 + 4 + 8 // 49 bytes
 	)
 
@@ -278,7 +284,7 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 		outputs = make([]TxOutput, outputCount)
 	}
 	for i := uint32(0); i < outputCount; i++ {
-		if off+32+32+8+wallet.MemoSize+4 > len(data) {
+		if off+32+32+8+params.MemoSize+4 > len(data) {
 			return nil, fmt.Errorf("unexpected end of data in output %d", i)
 		}
 
@@ -291,8 +297,8 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 		copy(outputs[i].EncryptedAmount[:], data[off:off+8])
 		off += 8
 
-		copy(outputs[i].EncryptedMemo[:], data[off:off+wallet.MemoSize])
-		off += wallet.MemoSize
+		copy(outputs[i].EncryptedMemo[:], data[off:off+params.MemoSize])
+		off += params.MemoSize
 
 		proofLen := binary.LittleEndian.Uint32(data[off:])
 		off += 4
@@ -779,9 +785,9 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 		}
 
 		tx.Outputs = append(tx.Outputs, TxOutput{
-			Commitment: out.commitment,
-			PublicKey:  stealthOut.OnetimePubKey,
-			RangeProof: rangeProof.Proof,
+			Commitment:    out.commitment,
+			PublicKey:     stealthOut.OnetimePubKey,
+			RangeProof:    rangeProof.Proof,
 			EncryptedMemo: encryptedMemo,
 		})
 	}
@@ -922,6 +928,12 @@ type RingMemberChecker func(pubKey, commitment [32]byte) bool
 
 // ValidateTransaction validates a transaction
 func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRingMember RingMemberChecker) error {
+	// Transaction.Version gates the entire transaction template / wire format.
+	// Memo has its own plaintext-envelope version; this version is for the tx itself.
+	if tx.Version != 1 {
+		return fmt.Errorf("unsupported tx version: %d", tx.Version)
+	}
+
 	// Coinbase transactions have no inputs
 	if tx.IsCoinbase() {
 		return validateCoinbase(tx)
@@ -932,7 +944,7 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 
 	// Memo ciphertext is consensus-visible but not consensus-decryptable (requires wallet secrets).
 	// Enforce only the invariants we can check deterministically without decryption.
-	var zeroMemo [wallet.MemoSize]byte
+	var zeroMemo [params.MemoSize]byte
 	for i := range tx.Outputs {
 		if tx.Outputs[i].EncryptedMemo == zeroMemo {
 			return fmt.Errorf("output %d: encrypted memo must not be all-zero", i)
@@ -1079,7 +1091,7 @@ func validateCoinbase(tx *Transaction) error {
 	}
 
 	// Same memo invariant as non-coinbase transactions.
-	if tx.Outputs[0].EncryptedMemo == ([wallet.MemoSize]byte{}) {
+	if tx.Outputs[0].EncryptedMemo == ([params.MemoSize]byte{}) {
 		return fmt.Errorf("coinbase output 0: encrypted memo must not be all-zero")
 	}
 

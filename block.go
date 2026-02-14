@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"blocknet/protocol/params"
 	"blocknet/wallet"
+
 	"golang.org/x/crypto/sha3"
 )
 
@@ -521,6 +523,14 @@ func validateCoinbaseConsensus(coinbase *Transaction, blockHeight uint64) error 
 	expectedEncryptedAmount := EncryptAmount(expectedReward, expectedBlinding, 0)
 	if output.EncryptedAmount != expectedEncryptedAmount {
 		return fmt.Errorf("encrypted amount does not match expected reward commitment")
+	}
+
+	// Coinbase memo semantics are consensus-decryptable because the coinbase
+	// shared secret is derived deterministically from public data (tx pubkey + height).
+	// Enforce empty-envelope-only policy to prevent miners from using coinbase
+	// memos as an on-chain metadata channel.
+	if memo, ok := wallet.DecryptMemo(output.EncryptedMemo, expectedBlinding, 0); !ok || len(memo) != 0 {
+		return fmt.Errorf("coinbase output 0: memo payload must be empty")
 	}
 
 	return nil
@@ -1824,28 +1834,23 @@ func CreateGenesisBlock(minerSpendPub, minerViewPub [32]byte, reward uint64) (*B
 // Transaction Size (add to transaction.go or here)
 // ============================================================================
 
-// Size returns the approximate serialized size of a transaction
+// Size returns the canonical serialized size of a transaction in bytes.
+// This must track `(*Transaction).Serialize()` exactly because block size
+// enforcement (`MaxBlockSize`) is consensus-critical.
 func (tx *Transaction) Size() int {
-	// Rough estimate:
-	// - Version: 4 bytes
-	// - Each input: 32 (keyimage) + ringSize * 32 (ring) + sig bytes
-	// - Each output: 32 (commitment) + 32 (pubkey) + rangeproof bytes
-	// - Fee: 8 bytes
-	// - TxPubKey: 32 bytes
+	// Prefix: version + txPubKey + inputCount + outputCount + fee
+	size := 1 + 32 + 4 + 4 + 8
 
-	size := 4 + 8 + 32 // version + fee + txpubkey
-
-	for _, in := range tx.Inputs {
-		size += 32 // key image
-		size += len(in.RingMembers) * 32
-		size += len(in.RingSignature)
+	// Outputs: pubkey + commitment + encrypted_amount + encrypted_memo + range_proof_len + range_proof
+	for _, out := range tx.Outputs {
+		size += 32 + 32 + 8 + params.MemoSize + 4 + len(out.RangeProof)
 	}
 
-	for _, out := range tx.Outputs {
-		size += 32 // commitment
-		size += 32 // pubkey
-		size += wallet.MemoSize
-		size += len(out.RangeProof)
+	// Inputs:
+	// key_image + pseudo_output + ring_size + ring_members + ring_commitments + sig_len + signature
+	for _, inp := range tx.Inputs {
+		ringSize := len(inp.RingMembers)
+		size += 32 + 32 + 4 + ringSize*32 + ringSize*32 + 4 + len(inp.RingSignature)
 	}
 
 	return size

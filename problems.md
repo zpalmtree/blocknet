@@ -370,59 +370,77 @@ This file is a live backlog of negative findings only.
    - **Status:** fixed (2026-02-13)  
    - **What changed:** Made the boundary explicit and enforceable: consensus treats memo bytes as opaque ciphertext (cannot validate envelope version/len/checksum without shared secrets) but now rejects the legacy/default all-zero `EncryptedMemo` pattern in `ValidateTransaction` (and coinbase validation). `relaunch.md` was updated to document this split clearly.
 
-48. [TODO] `medium` - Invalid/malformed memo activity is not visible to operators  
+48. [DONE] `medium` - Invalid/malformed memo activity is not visible to operators  
    - **Location:** `wallet/scanner.go` (`DecryptMemo` callsite in `ScanBlock`), daemon/wallet diagnostic surfaces  
    - **Problem:** Failed memo decrypt/validation returns `ok=false` and is ignored silently, with no counters/logging/diagnostic surface at wallet or daemon level.  
    - **Impact:** Malformed or policy-violating memo activity can go unnoticed, weakening incident detection and making memo-related failures harder to debug.  
    - **Required fix:** Add explicit invalid-memo accounting (metrics/log counters) and expose it via wallet/daemon diagnostics (at minimum a counter; optionally structured logs behind a debug flag).
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Wallet scanning now increments a memo-decrypt failure counter when `DecryptMemo` fails for an owned non-coinbase output, and the counter is exposed via `GET /api/wallet/balance` (`memo_decrypt_failures`, `memo_decrypt_last_height`) for operator visibility.
 
-49. [TODO] `low` - OpenAPI memo contract is underspecified and not machine-enforced  
+49. [DONE] `low` - OpenAPI memo contract is underspecified and not machine-enforced  
    - **Location:** `api_openapi.json` (`SendRequest` memo fields, tx lookup response schema)  
    - **Problem:** Schema text states `memo_text` and `memo_hex` are mutually exclusive and size-bounded, but schema does not encode those invariants (`oneOf`/`maxLength`). Tx lookup responses also do not provide a concrete transaction/output schema including `encrypted_memo`.  
    - **Impact:** Client generators and validators can accept request/response shapes that drift from server behavior, causing avoidable integration errors and contract ambiguity.  
    - **Required fix:** Encode memo constraints directly in schema (`oneOf`, explicit `maxLength`/pattern bounds) and define concrete transaction/output schemas that include memo-related fields (including `encrypted_memo`) used by tx lookup/history endpoints.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Updated `api_openapi.json` to machine-enforce `SendRequest` memo invariants (`oneOf` mutual exclusion, even-length hex pattern, and explicit max-length bounds) and replaced the untyped tx lookup payload with concrete `Transaction`/`TxInput`/`TxOutput` schemas that include `encrypted_memo` and reflect the daemon's current JSON encoding.
 
-50. [TODO] `low` - Memo KDF implementation does not include the documented domain-separation component from relaunch spec  
+50. [DONE] `low` - Memo KDF implementation does not include the documented domain-separation component from relaunch spec  
    - **Location:** `wallet/memo.go` (`deriveMemoMask`), `relaunch.md` encryption section  
-   - **Problem:** Current memo-mask derivation uses `"blocknet_memo_mask" || shared_secret || output_index`, while relaunch spec describes an additional domain-separation component (`block_domain_sep`).  
+   - **Problem:** Memo-mask derivation must include an explicit domain-separation component (`block_domain_sep`) per relaunch spec; otherwise spec/implementation drift can persist and create audit ambiguity.  
    - **Impact:** Spec/implementation mismatch increases review/audit ambiguity and risks accidental cryptographic coupling if future derivations are added without clear separation.  
    - **Required fix:** Either implement the documented domain-separation term in code or update spec text to exactly match the chosen KDF inputs.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Updated `wallet/memo.go` memo mask derivation to include the specified `block_domain_sep` term (`blocknet_mainnet`) and updated `relaunch.md` to explicitly define the domain separator and input encoding order used by the KDF.
 
-51. [TODO] `high` - Wallet send API path has no route-level abuse throttling despite expensive cryptographic work  
+51. [DONE] `high` - Wallet send API path has no route-level abuse throttling despite expensive cryptographic work  
    - **Location:** `api_handlers.go` (`handleSend`)  
    - **Problem:** `POST /api/wallet/send` performs expensive tx construction (range proofs + ring signatures) but lacks explicit request rate limiting and in-flight concurrency guards.  
    - **Impact:** Authenticated or leaked-token abuse can trigger sustained CPU/resource pressure and degrade daemon responsiveness.  
    - **Required fix:** Add route-scoped rate limits and bounded concurrent build/submit semaphore for send path, similar to `submitblock` hardening pattern.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added route-scoped abuse controls for `POST /api/wallet/send`: per-client-IP token-bucket limiting plus a bounded in-flight send semaphore, so over-limit or saturated send requests fail fast with `429` before doing expensive tx construction work.
 
-52. [TODO] `medium` - Pre-build fee estimate is stale under fixed memo overhead and may underprice transactions  
-   - **Location:** `wallet/builder.go` (`Transfer`, `estimatedSize := 200 + len(recipients)*100`)  
+52. [DONE] `medium` - Pre-build fee estimate is stale under fixed memo overhead and may underprice transactions  
+   - **Location:** `wallet/builder.go` (`Transfer` fee pre-estimation / input selection loop)  
    - **Problem:** Initial fee estimate does not account for fixed 128-byte memo per output plus realistic proof/signature sizes, increasing mismatch risk before final tx serialization.  
    - **Impact:** More transactions can fail mempool fee-rate admission or exhibit inconsistent UX due to avoidable fee underestimation.  
    - **Required fix:** Replace rough estimate with structure-aware size model that includes memo overhead and conservative proof/signature bounds before fee calculation.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Replaced the rough fee pre-estimate in `wallet/builder.go` with a structure-aware, conservative size model (includes 128-byte memo per output plus bounded range-proof and RingCT signature sizes) and iterates input selection to account for fee-dependent input counts before building/signing the final tx.
 
-53. [TODO] `medium` - Relaunch memo format is not gated by explicit transaction-version policy  
+53. [DONE] `medium` - Relaunch memo format is not gated by explicit transaction-version policy  
    - **Location:** `transaction.go` (`Transaction.Version`, `ValidateTransaction`, tx builders)  
    - **Problem:** Protocol changed materially (mandatory memo output field) without a strict version gate that encodes relaunch-format expectations in validation logic.  
    - **Impact:** Future upgrades and audits face ambiguity around format activation boundaries and acceptable version surface.  
    - **Required fix:** Define and enforce explicit supported tx version set for relaunch memo format, rejecting unsupported versions consistently across validation and ingress.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added an explicit `tx.Version == 1` consensus gate in `ValidateTransaction`, rejecting unsupported versions deterministically so the relaunch tx template remains unambiguous until a future intentional v2 upgrade.
 
-54. [TODO] `low` - Consensus-critical code depends on wallet package constants for memo size  
+54. [DONE] `low` - Consensus-critical code depends on wallet package constants for memo size  
    - **Location:** `transaction.go`, `block.go` imports of `blocknet/wallet` for `MemoSize`  
    - **Problem:** Core consensus serialization/validation paths depend on wallet-layer constants, creating layering/coupling risk.  
    - **Impact:** Refactors in wallet package can inadvertently affect protocol-critical behavior; separation-of-concerns is weakened.  
    - **Required fix:** Move memo constants to consensus/common protocol params package and consume from both wallet and consensus paths.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Introduced `blocknet/protocol/params` memo constants and updated consensus-critical tx/block serialization/validation to use `params.MemoSize` (and related constants) instead of `wallet.MemoSize`. Wallet code now consumes the shared params and re-exports `wallet.MemoSize` for non-consensus callers.
 
-56. [TODO] `high` - JSON block ingest can default missing memo fields to zero arrays without explicit rejection  
+56. [DONE] `high` - JSON block ingest can default missing memo fields to zero arrays without explicit rejection  
    - **Location:** `daemon.go` (`handleBlock`, `processBlockData`) with JSON unmarshal into tx outputs  
    - **Problem:** Missing `encrypted_memo` in JSON payload can deserialize to zero-valued fixed array, and current consensus checks do not explicitly reject this semantic defaulting.  
    - **Impact:** Mandatory encrypted-memo policy can be weakened at network ingest boundary through shape-valid but policy-invalid payloads.  
    - **Required fix:** Add explicit validation to reject policy-invalid memo ciphertext patterns/semantics on all outputs during transaction/block validation.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Consensus validation now rejects the all-zero `EncryptedMemo` pattern for every output in `ValidateTransaction` (and coinbase validation). This fail-closed invariant ensures that JSON-unmarshal defaulting of an omitted `encrypted_memo` field (zero array) is deterministically rejected at validation/ingress.
 
-57. [TODO] `medium` - Coinbase memo semantics are not explicitly constrained by consensus policy  
+57. [DONE] `medium` - Coinbase memo semantics are not explicitly constrained by consensus policy  
    - **Location:** `transaction.go` (`CreateCoinbase`, coinbase validation path)  
    - **Problem:** Coinbase outputs include memo bytes but there is no explicit rule requiring an empty-envelope-only policy (if desired) or otherwise documenting allowed coinbase memo semantics.  
    - **Impact:** Miners can encode arbitrary payloads in coinbase memos, potentially creating unintended metadata channel variance.  
    - **Required fix:** Define and enforce coinbase memo policy explicitly (for example empty-envelope-only), or document permissive behavior as intentional consensus design.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Enforced empty-envelope-only coinbase memo policy in consensus: `validateCoinbaseConsensus` now decrypts `EncryptedMemo` under the deterministic coinbase blinding and rejects any non-empty payload. Added regression test `TestCoinbaseConsensusRejectsNonEmptyMemoPayload`.
 
 59. [DONE] `medium` - Memo padding path falls back to deterministic bytes on RNG failure instead of failing closed  
    - **Location:** `wallet/memo.go` (`buildMemoEnvelope`)  
@@ -441,11 +459,13 @@ This file is a live backlog of negative findings only.
    - **What changed:** `DeserializeTx` now enforces canonical full-byte consumption and returns an error if any trailing bytes remain after parsing.  
    - **Regression coverage:** added `TestDeserializeTxRejectsTrailingBytes` (unit test for trailing-byte rejection).
 
-62. [TODO] `medium` - `DeserializeTx` proof/signature size caps remain loose relative to practical protocol bounds  
+62. [DONE] `medium` - `DeserializeTx` proof/signature size caps remain loose relative to practical protocol bounds  
    - **Location:** `transaction.go` (`maxProofSize`, `maxSigSize` in `DeserializeTx`)  
    - **Problem:** Current parser caps are permissive enough to allow unnecessarily heavy allocation/verification work within transport limits.  
    - **Impact:** Residual CPU/memory pressure surface from oversized-but-accepted fields, especially under adversarial gossip/mempool load.  
    - **Required fix:** Tighten parser caps to realistic protocol ceilings and keep them aligned with signer/proof producer maxima.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Tightened `DeserializeTx` caps to relaunch-realistic bounds (ringSize <= `RingSize`, range proof <= `1024`, RingCT signature <= `96+64*RingSize`) and added parser regression tests rejecting oversized proof/signature lengths and ring sizes before allocation-heavy decode.
 
 66. [DONE] `medium` - No end-to-end regression coverage that trailing-byte transactions are rejected on all ingress paths  
    - **Location:** `transaction.go` (`DeserializeTx`), `mempool.go` (`AddTransaction`), `daemon.go` (`processTxData`, gossip tx handler path)  
@@ -456,41 +476,53 @@ This file is a live backlog of negative findings only.
    - **What changed:** Added daemon-ingest regression tests ensuring trailing-byte transaction payloads are rejected before mempool admission in both sync ingest (`processTxData`) and gossip ingest (`handleTx`).  
    - **Regression coverage:** added `TestDaemonProcessTxDataRejectsTrailingBytes` and `TestDaemonHandleTxRejectsTrailingBytes`.
 
-67. [TODO] `medium` - Missing regression tests that all transaction-construction paths populate non-default memo ciphertexts  
+67. [DONE] `medium` - Missing regression tests that all transaction-construction paths populate non-default memo ciphertexts  
    - **Location:** `wallet/builder.go`, `transaction.go` (`CreateTransaction`, `CreateCoinbase`)  
    - **Problem:** Multiple construction paths exist; not all currently have explicit tests asserting encrypted memo bytes are populated per output and not left in default-zero state.  
    - **Impact:** Future refactors can accidentally reintroduce deterministic zero/default memo patterns and violate uniformity goals.  
    - **Required fix:** Add path-specific construction tests for recipient/change/coinbase outputs ensuring memo ciphertexts satisfy non-default envelope policy (or explicit policy for coinbase if empty-envelope-only).
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added path-specific construction regression tests covering wallet builder transfers (recipient + change), legacy `TxBuilder` construction, and coinbase creation to ensure `EncryptedMemo` is never left as the all-zero default. Coinbase semantics are further constrained by the empty-envelope-only consensus policy.
 
-68. [TODO] `medium` - Missing regression coverage for JSON block ingest with omitted `encrypted_memo` fields  
+68. [DONE] `medium` - Missing regression coverage for JSON block ingest with omitted `encrypted_memo` fields  
    - **Location:** `daemon.go` (`handleBlock`, `processBlockData`) and block JSON decoding paths  
    - **Problem:** JSON decoding can default absent fixed arrays; there is no explicit test ensuring omitted memo fields are rejected under relaunch policy.  
    - **Impact:** Policy-invalid payloads can pass ingest if validation semantics drift, weakening mandatory memo guarantees.  
    - **Required fix:** Add daemon ingest tests that submit block JSON with omitted/invalid memo fields and assert rejection before state mutation.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added regression tests that JSON-unmarshal transactions with `encrypted_memo` omitted (defaulting to all-zero fixed arrays) and assert relaunch memo policy rejects them for both coinbase and non-coinbase validation paths (`daemon_block_json_memo_test.go`).
 
-71. [TODO] `low` - Explorer/API memo rendering policy lacks explicit regression coverage for ciphertext-only display guarantees  
+71. [DONE] `low` - Explorer/API memo rendering policy lacks explicit regression coverage for ciphertext-only display guarantees  
    - **Location:** `explorer.go`, API tx/history response shaping in `api_handlers.go`  
    - **Problem:** There is no dedicated regression suite ensuring public explorer/API surfaces do not accidentally expose unsafe/plaintext memo rendering semantics outside intended wallet context.  
    - **Impact:** UI/API regressions could leak or unsafely render memo content under future feature changes.  
    - **Required fix:** Add regression tests locking expected memo exposure policy (encrypted-only where intended, escaped/safe rendering behavior where decoded memo is presented).
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added public-surface regression coverage ensuring explorer tx pages and public `GET /api/tx/{hash}` responses only expose ciphertext memo bytes (`encrypted_memo` / hex display) and never include plaintext memo fields like `memo_text` / `memo_hex` / legacy `payment_id` (`memo_exposure_policy_test.go`).
 
-72. [TODO] `medium` - Block-size accounting remains approximate across validation and cheap prefilter paths after memo footprint expansion  
+72. [DONE] `medium` - Block-size accounting remains approximate across validation and cheap prefilter paths after memo footprint expansion  
    - **Location:** `block.go` (`Transaction.Size`, `Block.Size`, `ValidateBlock`), `daemon.go` (`validateBlockCheapPrefilters`)  
    - **Problem:** Size checks rely on approximate transaction sizing, which can diverge from canonical serialized bytes; memo overhead increases sensitivity to this mismatch.  
    - **Impact:** Oversized blocks may be inconsistently admitted/rejected across gossip prefilters and consensus validation boundaries.  
    - **Required fix:** Use canonical serialized-size accounting in block/tx size checks and align all ingress/validation size gates to the same exact metric.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** `Transaction.Size()` / `Block.Size()` use canonical serialized-size accounting (including fixed memo bytes), and daemon cheap prefilters use the same `Block.Size()` metric. Added a regression test showing memo bytes are decisive in oversize rejection at the cheap prefilter boundary (`block_size_consensus_test.go`).
 
-73. [TODO] `medium` - Missing fuzz/property testing for `DeserializeTx` under memo-era wire format  
+73. [DONE] `medium` - Missing fuzz/property testing for `DeserializeTx` under memo-era wire format  
    - **Location:** `transaction.go` (`DeserializeTx`)  
    - **Problem:** Parser now handles additional fixed memo bytes and multiple length fields but lacks fuzz/property coverage for malformed/truncated/overlong variants.  
    - **Impact:** Parser edge-case regressions can slip through example-based tests and become DoS or consensus-divergence risks.  
    - **Required fix:** Add fuzz/property tests targeting parser invariants (no panic, exact-consumption, deterministic reject/accept behavior).
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added a Go fuzz/property test that exercises `DeserializeTx` across arbitrary byte inputs and asserts deterministic accept/reject behavior plus canonical round-trip invariants when parsing succeeds (`deserialize_tx_fuzz_test.go`).
 
-78. [TODO] `medium` - Send API lacks idempotency protection for retry-safe client behavior  
+78. [DONE] `medium` - Send API lacks idempotency protection for retry-safe client behavior  
    - **Location:** `api_handlers.go` (`handleSend`)  
    - **Problem:** `POST /api/wallet/send` has no idempotency key support, so client retries/timeouts can submit duplicate transfers.  
    - **Impact:** Operational duplicate-send risk under network/API retry behavior, especially for automated clients/integrators.  
    - **Required fix:** Add optional idempotency key handling with bounded replay window and deterministic response replay for duplicate keys.
+   - **Status:** fixed (2026-02-13)  
+   - **What changed:** Added optional `Idempotency-Key` support for `POST /api/wallet/send` with a bounded in-memory replay window; duplicates with the same key+payload replay the original response, and key reuse with a different payload fails closed. Added regression coverage (`api_send_idempotency_test.go`).
 
 84. [DONE] `medium` - Runtime paths had widespread unchecked error returns in API/daemon/P2P/storage/wallet flows  
    - **Location:** `api_auth.go`, `api_handlers.go`, `api_server.go`, `api_sse.go`, `explorer.go`, `main.go`, `cli.go`, `daemon.go`, `block.go`, `storage.go`, `p2p/*`, `wallet/builder.go`, `wallet/memo.go`, `wallet/scanner.go`, `tests.go`  
@@ -739,101 +771,119 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Suggested files:** `daemon_tx_test.go`.
     - **Status:** implemented in `TestDaemonTxIngestRejectsTamperedRingCTExternalKeyImage`; passing via `go test ./... -run TestDaemonTxIngestRejectsTamperedRingCTExternalKeyImage -count=1`.
 
-20. [TODO] **Relaunch tx parser rejects legacy no-memo wire shape and malformed memo-size outputs**
+20. [DONE] **Relaunch tx parser rejects legacy no-memo wire shape and malformed memo-size outputs**
     - **Scenario:** Feed transactions encoded with pre-memo output layout (no `EncryptedMemo`) or truncated memo bytes.
     - **Primary path:** `transaction.go` `DeserializeTx`.
     - **Test setup:** Build raw tx byte variants that differ only in output wire shape and memo byte length.
     - **Shared helpers:** `mustCraftMalformedTxVariant` (extend with memo variants) or local byte constructors.
     - **Assertions:** Parser rejects all non-canonical output layouts; canonical memo layout is accepted.
     - **Suggested files:** `transaction_serialization_test.go`.
+    - **Status:** implemented in `TestDeserializeTxRejectsLegacyNoMemoWireShapeAndTruncatedMemo` (Go tests).
 
-21. [TODO] **Block-size consensus check uses canonical serialized bytes under memo overhead**
+21. [DONE] **Block-size consensus check uses canonical serialized bytes under memo overhead**
     - **Scenario:** Construct blocks near `MaxBlockSize` where approximate accounting can diverge from real serialized bytes.
     - **Primary path:** `block.go` `Block.Size`, `ValidateBlock`, daemon ingest (`handleBlock`/`processBlockData`).
     - **Test setup:** Build transactions with realistic range-proof/signature sizes and fixed 128-byte memos, then assemble edge-size blocks.
     - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `mustMineAndProcessBlock` (or equivalent block constructors).
     - **Assertions:** Acceptance/rejection exactly tracks canonical on-wire size budget; no oversize block passes due to approximation.
     - **Suggested files:** `block_size_consensus_test.go`.
+    - **Status:** implemented in `TestTransactionSizeMatchesSerializeLength` and `TestBlockSizeMatchesCanonicalTxBytesAndIncludesMemo` (Go tests).
 
-22. [TODO] **Memo input policy enforcement (control/bidi/zero-width) on API and CLI send paths**
+22. [WONTFIX] **Memo input policy enforcement (control/bidi/zero-width) on API and CLI send paths**
     - **Scenario:** Submit memo text containing control chars, bidi controls, and zero-width characters.
     - **Primary path:** `api_handlers.go` `handleSend`, `cli.go` `cmdSend`.
     - **Test setup:** API handler requests with `memo_text` payloads and CLI command invocations with unsafe memo strings.
     - **Shared helpers:** `mustMakeHTTPJSONRequest`.
     - **Assertions:** Unsafe memo text is rejected at input boundary with deterministic errors; allowed memo text/hex paths still succeed.
     - **Suggested files:** `api_send_memo_policy_test.go`, `cli_send_test.go`.
+    - **Status:** wontfix (2026-02-13)  
+    - **Rationale:** Memos are treated as attacker-controlled arbitrary bytes. Rejecting characters on *our* send path is incomplete (peers can still send pathological memos) and risks false positives for legitimate users. The enforced boundary is safe rendering/escaping at all plaintext memo display surfaces (CLI/logs/explorer/API), with raw hex available for fidelity. Regression coverage should live with memo exposure/rendering policy tests (see items `31` and `71`).
 
-23. [TODO] **Tx version-gating for relaunch memo format is enforced on all ingress paths**
+23. [DONE] **Tx version-gating for relaunch memo format is enforced on all ingress paths**
     - **Scenario:** Submit transactions with unsupported `tx.Version` that otherwise satisfy structural checks.
     - **Primary path:** `transaction.go` `ValidateTransaction`, mempool admission (`mempool.go`), daemon tx ingest (`daemon.go`).
     - **Test setup:** Build valid tx then mutate version field across unsupported values; submit via direct validation, mempool, and daemon ingest.
     - **Shared helpers:** `mustCreateTestChain`, `mustStartTestDaemon`.
     - **Assertions:** Unsupported versions are rejected consistently in all ingress paths before state mutation.
     - **Suggested files:** `transaction_validation_test.go`, `mempool_test.go`, `daemon_tx_test.go`.
+    - **Status:** implemented in `TestValidateTransactionRejectsUnsupportedTxVersion`, `TestMempoolRejectsUnsupportedTxVersion`, and `TestDaemonTxIngestRejectsUnsupportedTxVersion` (Go tests).
 
-24. [TODO] **OpenAPI/handler parity for memo contract remains locked**
+24. [DONE] **OpenAPI/handler parity for memo contract remains locked**
     - **Scenario:** API schema drifts from handler behavior for `memo_text`/`memo_hex`.
     - **Primary path:** `api_openapi.json`, `api_handlers.go` (`handleSend`, `handleHistory`).
     - **Test setup:** Contract test that validates documented fields against real handler responses/validation behavior.
     - **Shared helpers:** `mustMakeHTTPJSONRequest`.
     - **Assertions:** OpenAPI includes only active memo fields; requests/responses match documented required/optional semantics.
     - **Suggested files:** `api_openapi_contract_test.go`.
+    - **Status:** implemented in `TestOpenAPIAndHandlerMemoContractParity` (Go tests).
 
-26. [TODO] **Trailing-byte transaction variants are rejected across validator, mempool, and daemon ingest**
+26. [DONE] **Trailing-byte transaction variants are rejected across validator, mempool, and daemon ingest**
     - **Scenario:** Feed canonical tx bytes with appended trailing junk bytes.
     - **Primary path:** `transaction.go` (`DeserializeTx`), `mempool.go` (`AddTransaction`), `daemon.go` (`processTxData` / tx handler path).
     - **Test setup:** Build a valid transaction, append bytes, submit via direct deserialize, mempool add, and daemon tx ingest.
     - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `mustStartTestDaemon`.
     - **Assertions:** All paths reject trailing-byte payloads deterministically; mempool remains unchanged.
     - **Suggested files:** `transaction_serialization_test.go`, `mempool_test.go`, `daemon_tx_test.go`.
+    - **Status:** implemented in `TestDeserializeTxRejectsTrailingBytes`, `TestMempoolRejectsTrailingBytes`, `TestDaemonProcessTxDataRejectsTrailingBytes`, and `TestDaemonHandleTxRejectsTrailingBytes` (Go tests).
 
-27. [TODO] **All transaction-construction paths produce non-default memo ciphertext policy outputs**
+27. [DONE] **All transaction-construction paths produce non-default memo ciphertext policy outputs**
     - **Scenario:** Build transactions via wallet builder, legacy constructor path (if still reachable), and coinbase constructor.
     - **Primary path:** `wallet/builder.go`, `transaction.go` (`CreateTransaction`, `CreateCoinbase`).
     - **Test setup:** Construct outputs in each path and inspect serialized `EncryptedMemo` bytes.
     - **Shared helpers:** `mustCreateTestChain` where chain context is needed.
     - **Assertions:** No path emits unintended default-zero memo bytes unless explicitly allowed by documented coinbase policy.
     - **Suggested files:** `transaction_serialization_test.go`, `wallet/builder_test.go`.
+    - **Status:** implemented in `TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos`, `TestMemoCiphertextPolicy_LegacyTxBuilderProducesNonZeroMemos`, and `TestMemoCiphertextPolicy_CoinbaseConstructorProducesNonZeroMemo` (Go tests).
 
-28. [TODO] **Daemon block JSON ingest rejects omitted/invalid memo fields under relaunch policy**
+28. [DONE] **Daemon block JSON ingest rejects omitted/invalid memo fields under relaunch policy**
     - **Scenario:** Submit block JSON payloads that omit `encrypted_memo` or provide malformed memo field structure.
     - **Primary path:** `daemon.go` (`handleBlock`, `processBlockData`) and downstream block/tx validation.
     - **Test setup:** Start test daemon, submit crafted block JSON variants through ingest entrypoints.
     - **Shared helpers:** `mustCreateTestChain`, `mustStartTestDaemon`, `mustSubmitBlockData` (or JSON variant helper).
     - **Assertions:** Ingest rejects policy-invalid memo field payloads and does not mutate chain state.
     - **Suggested files:** `daemon_block_ingest_test.go`.
+    - **Status:** implemented (2026-02-13)
+    - **Coverage:** `TestDaemonProcessBlockDataRejectsOmittedEncryptedMemoAndDoesNotMutateTip` and `TestDaemonHandleBlockRejectsOmittedEncryptedMemoAndDoesNotMutateTip` in `daemon_block_ingest_test.go`.
 
-31. [TODO] **Explorer/API memo exposure policy regression guard (ciphertext-only where intended)**
+31. [DONE] **Explorer/API memo exposure policy regression guard (ciphertext-only where intended)**
     - **Scenario:** Future UI/API changes accidentally expose plaintext memo or unsafe rendering in public surfaces.
     - **Primary path:** `explorer.go`, `api_handlers.go` tx/history/public response shaping.
     - **Test setup:** Request explorer tx view/API tx endpoints for transactions with memo payloads and inspect rendered/serialized fields.
     - **Shared helpers:** `mustMakeHTTPJSONRequest`.
     - **Assertions:** Public surfaces only expose intended memo representation and preserve safe rendering policy.
     - **Suggested files:** `explorer_tx_memo_policy_test.go`, `api_tx_policy_test.go`.
+    - **Status:** implemented (2026-02-13)
+    - **Coverage:** `TestPublicSurfacesExposeCiphertextOnlyForMemos` in `memo_exposure_policy_test.go`.
 
-32. [TODO] **Canonical serialized-size accounting is used consistently for block-size enforcement and cheap prefilters**
+32. [DONE] **Canonical serialized-size accounting is used consistently for block-size enforcement and cheap prefilters**
     - **Scenario:** Blocks near size limit produce different outcomes under approximate vs canonical size accounting.
     - **Primary path:** `block.go` (`Transaction.Size`, `Block.Size`, `ValidateBlock`), `daemon.go` (`validateBlockCheapPrefilters`).
     - **Test setup:** Construct edge-size blocks with realistic tx payloads (including fixed memo overhead) and run both prefilter and consensus validation paths.
     - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `assertTipUnchanged`.
     - **Assertions:** All size gates evaluate the same canonical size and produce consistent accept/reject decisions.
     - **Suggested files:** `block_size_consensus_test.go`, `daemon_gossip_penalty_test.go`.
+    - **Status:** implemented (2026-02-13)
+    - **Coverage:** `TestTransactionSizeMatchesSerializeLength`, `TestBlockSizeMatchesCanonicalTxBytesAndIncludesMemo`, `TestBlockCheapPrefilterRejectsOversizeBlock_SizeIncludesMemoBytes` in `block_size_consensus_test.go`.
 
-33. [TODO] **`DeserializeTx` fuzz/property invariants hold for memo-era wire format**
+33. [DONE] **`DeserializeTx` fuzz/property invariants hold for memo-era wire format**
     - **Scenario:** Randomized malformed/truncated/overlong transaction byte streams with memo fields.
     - **Primary path:** `transaction.go` (`DeserializeTx`).
     - **Test setup:** Add fuzz/property test harness over transaction bytes and targeted mutation corpus.
     - **Shared helpers:** parser corpus builders from serialization tests.
     - **Assertions:** No panics, deterministic accept/reject behavior, and exact-consumption invariant on successful parse.
     - **Suggested files:** `transaction_fuzz_test.go` (or Go fuzz target in `transaction_serialization_test.go`).
+    - **Status:** implemented (2026-02-13)
+    - **Coverage:** `FuzzDeserializeTx_NoPanicAndCanonicalRoundTrip` in `deserialize_tx_fuzz_test.go`.
 
-38. [TODO] **Send API idempotency behavior is deterministic under retries**
+38. [DONE] **Send API idempotency behavior is deterministic under retries**
     - **Scenario:** Client retries `POST /api/wallet/send` with same idempotency key under timeout/retry conditions.
     - **Primary path:** `api_handlers.go` (`handleSend`) plus idempotency key storage/replay path.
     - **Test setup:** Submit repeated send requests with identical idempotency key and payload; vary timing and retry order.
     - **Shared helpers:** `mustMakeHTTPJSONRequest`.
     - **Assertions:** Duplicate keyed requests return the same tx result without creating additional transfers; mismatched payload+same key is rejected deterministically.
     - **Suggested files:** `api_send_idempotency_test.go`.
+    - **Status:** implemented (2026-02-13)
+    - **Coverage:** `TestHandleSendIdempotencyKeyReplayAndMismatch` in `api_send_idempotency_test.go`.
 
 ### Deferred test restoration after bug crunch
 

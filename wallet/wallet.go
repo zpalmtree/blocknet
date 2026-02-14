@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcutil/base58"
@@ -85,6 +86,10 @@ type Wallet struct {
 	data     WalletData
 	filename string
 	password []byte // kept in memory for re-encryption on save
+
+	// Diagnostics counters (not persisted).
+	memoDecryptFailures   atomic.Uint64
+	memoDecryptLastHeight atomic.Uint64
 
 	// Callbacks for crypto operations (set by main package)
 	generateStealthKeys     func() (*StealthKeys, error)

@@ -95,11 +95,7 @@ func (n *Node) IsBanned(pid peer.ID) bool {
 		log.Printf("IsBanned: pex is nil, allowing peer %s", pid.String()[:16])
 		return false
 	}
-	banned := n.pex.IsBanned(pid)
-	if banned {
-		log.Printf("IsBanned: peer %s IS BANNED", pid.String()[:16])
-	}
-	return banned
+	return n.pex.IsBanned(pid)
 }
 
 // BanPeer bans a peer for misbehavior

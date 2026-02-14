@@ -87,11 +87,19 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if tx.IsCoinbase() {
+	// Fail closed on non-canonical tx bytes (including trailing junk).
+	// Most ingress paths already call DeserializeTx before AddTransaction, but
+	// mempool is a safety boundary and should only accept canonical txData.
+	parsedTx, err := DeserializeTx(txData)
+	if err != nil {
+		return fmt.Errorf("invalid transaction data: %w", err)
+	}
+
+	if parsedTx.IsCoinbase() {
 		return fmt.Errorf("coinbase transaction cannot be added to mempool")
 	}
 
-	txID, err := tx.TxID()
+	txID, err := parsedTx.TxID()
 	if err != nil {
 		return fmt.Errorf("failed to get tx ID: %w", err)
 	}
@@ -102,14 +110,14 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 	}
 
 	// Check for double-spend with mempool txs
-	for _, input := range tx.Inputs {
+	for _, input := range parsedTx.Inputs {
 		if existingTxID, exists := m.txByImage[input.KeyImage]; exists {
 			return fmt.Errorf("double-spend: key image already in mempool (tx %x...)", existingTxID[:8])
 		}
 	}
 
 	// Validate against UTXO set (doesn't modify it)
-	if err := ValidateTransaction(tx, m.isKeyImageSpent, m.isCanonicalRingMember); err != nil {
+	if err := ValidateTransaction(parsedTx, m.isKeyImageSpent, m.isCanonicalRingMember); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -139,16 +147,16 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 
 	// Add to mempool
 	entry := &MempoolEntry{
-		Tx:      tx,
+		Tx:      parsedTx,
 		TxID:    txID,
 		TxData:  txData,
-		Fee:     tx.Fee,
+		Fee:     parsedTx.Fee,
 		FeeRate: feeRate,
 		Size:    size,
 		AddedAt: time.Now(),
 	}
 	m.txByID[txID] = entry
-	for _, input := range tx.Inputs {
+	for _, input := range parsedTx.Inputs {
 		m.txByImage[input.KeyImage] = txID
 	}
 	heap.Push(&m.priorityQueue, entry)

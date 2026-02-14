@@ -5,13 +5,17 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"blocknet/protocol/params"
 	"golang.org/x/crypto/sha3"
 )
 
 const (
-	MemoSize            = 128
-	memoEnvelopeVersion = 0x01
-	memoPayloadMax      = 124
+	// Re-export protocol constants for wallet callers.
+	// Consensus-critical code should import `blocknet/protocol/params` directly.
+	MemoSize = params.MemoSize
+
+	memoEnvelopeVersion = params.MemoEnvelopeVersion
+	memoPayloadMax      = params.MemoPayloadMax
 )
 
 // EncryptMemo builds a memo envelope and encrypts it with a shared secret.
@@ -99,11 +103,12 @@ func memoChecksum(payload []byte) [32]byte {
 
 func deriveMemoMask(sharedSecret [32]byte, outputIndex int) [MemoSize]byte {
 	h := sha3.New256()
-	h.Write([]byte("blocknet_memo_mask"))
 	h.Write(sharedSecret[:])
+	h.Write([]byte("memo"))
 	var outputIndexBytes [4]byte
 	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
 	h.Write(outputIndexBytes[:])
+	h.Write([]byte(params.MemoBlockDomainSep))
 	seed := h.Sum(nil)
 
 	var mask [MemoSize]byte

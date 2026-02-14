@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -174,12 +176,14 @@ func (s *APIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 	total, unspent := s.wallet.OutputCount()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"spendable":       s.wallet.SpendableBalance(height),
-		"pending":         s.wallet.PendingBalance(height),
-		"total":           s.wallet.Balance(),
-		"outputs_total":   total,
-		"outputs_unspent": unspent,
-		"chain_height":    height,
+		"spendable":                s.wallet.SpendableBalance(height),
+		"pending":                  s.wallet.PendingBalance(height),
+		"total":                    s.wallet.Balance(),
+		"outputs_total":            total,
+		"outputs_unspent":          unspent,
+		"chain_height":             height,
+		"memo_decrypt_failures":    s.wallet.MemoDecryptFailureCount(),
+		"memo_decrypt_last_height": s.wallet.MemoDecryptLastFailureHeight(),
 	})
 }
 
@@ -249,13 +253,78 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	var reqHash [32]byte
+	if idemKey != "" {
+		if len(idemKey) > 128 {
+			writeError(w, http.StatusBadRequest, "idempotency key too long")
+			return
+		}
+		reqHash = hashRequestBody(bodyBytes)
+		cacheKey := "send:" + idemKey
+		state, res := s.sendIdem.getOrStart(time.Now(), cacheKey, reqHash)
+		switch state {
+		case "replay":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(res.status)
+			_, _ = w.Write(res.body)
+			return
+		case "mismatch":
+			writeError(w, http.StatusConflict, "idempotency key reuse with different request")
+			return
+		case "inflight":
+			writeError(w, http.StatusConflict, "idempotency key in progress")
+			return
+		case "start":
+			// proceed (complete on return)
+		default:
+			writeError(w, http.StatusInternalServerError, "idempotency state error")
+			return
+		}
+
+		cw := newCapturingResponseWriter(w)
+		w = cw
+		defer func() {
+			// Don't pin retryable overload responses; let clients retry normally.
+			if cw.status == http.StatusTooManyRequests {
+				s.sendIdem.abandon(cacheKey)
+				return
+			}
+			if cw.wroteAny {
+				s.sendIdem.complete(time.Now(), cacheKey, reqHash, cw.status, cw.buf.Bytes())
+			} else {
+				s.sendIdem.abandon(cacheKey)
+			}
+		}()
+	}
+
+	ip := clientIP(r)
+	if !s.sendLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "send rate limit exceeded")
+		return
+	}
+
+	select {
+	case s.sendSem <- struct{}{}:
+		defer func() { <-s.sendSem }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "send busy, retry later")
+		return
+	}
+
 	var req struct {
 		Address  string `json:"address"`
 		Amount   uint64 `json:"amount"` // atomic units
 		MemoText string `json:"memo_text"`
 		MemoHex  string `json:"memo_hex"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -351,6 +420,31 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		resp["memo_hex"] = hex.EncodeToString(memo)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type capturingResponseWriter struct {
+	w        http.ResponseWriter
+	status   int
+	wroteAny bool
+	buf      bytes.Buffer
+}
+
+func newCapturingResponseWriter(w http.ResponseWriter) *capturingResponseWriter {
+	return &capturingResponseWriter{w: w, status: http.StatusOK}
+}
+
+func (c *capturingResponseWriter) Header() http.Header { return c.w.Header() }
+
+func (c *capturingResponseWriter) WriteHeader(statusCode int) {
+	c.status = statusCode
+	c.wroteAny = true
+	c.w.WriteHeader(statusCode)
+}
+
+func (c *capturingResponseWriter) Write(p []byte) (int, error) {
+	c.wroteAny = true
+	_, _ = c.buf.Write(p)
+	return c.w.Write(p)
 }
 
 // handleLock locks the wallet.

@@ -121,6 +121,8 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 				if !tx.IsCoinbase {
 					if memo, ok := DecryptMemo(out.EncryptedMemo, outputSecret, out.Index); ok {
 						owned.Memo = memo
+					} else {
+						s.wallet.recordMemoDecryptFailure(block.Height)
 					}
 				}
 

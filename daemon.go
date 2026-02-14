@@ -502,6 +502,28 @@ func validateBlockCheapPrefilters(block *Block) error {
 			return fmt.Errorf("multiple coinbase transactions")
 		}
 	}
+
+	// Memo-era wire format requires a fixed-size encrypted memo per output.
+	// When decoding block JSON into Go fixed arrays, omitted `encrypted_memo`
+	// silently defaults to all-zero bytes. Reject that at the cheap prefilter
+	// boundary so we don't waste expensive validation on policy-invalid blocks.
+	for ti, tx := range block.Transactions {
+		if tx == nil {
+			return fmt.Errorf("nil transaction at index %d", ti)
+		}
+		for oi, out := range tx.Outputs {
+			allZero := true
+			for _, b := range out.EncryptedMemo[:] {
+				if b != 0 {
+					allZero = false
+					break
+				}
+			}
+			if allZero {
+				return fmt.Errorf("tx %d output %d: encrypted memo must not be all-zero", ti, oi)
+			}
+		}
+	}
 	return nil
 }
 

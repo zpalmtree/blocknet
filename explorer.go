@@ -269,7 +269,12 @@ func (e *Explorer) buildStatsSnapshot() explorerStatsSnapshot {
 		Emitted:      fmt.Sprintf("%.2f", float64(emitted)/100_000_000),
 		Remaining:    fmt.Sprintf("%.2f", float64(remaining)/100_000_000),
 		PctEmitted:   fmt.Sprintf("%.4f", pctEmitted),
-		Peers:        len(e.daemon.node.Peers()),
+		Peers: func() int {
+			if e.daemon == nil || e.daemon.node == nil {
+				return 0
+			}
+			return len(e.daemon.node.Peers())
+		}(),
 		DataJSON:     template.JS(jsonData),
 		GenesisTs:    genesisTs,
 		ComputedAt:   time.Now(),
@@ -360,7 +365,12 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Height":      height,
 		"Difficulty":  chain.NextDifficulty(),
-		"Peers":       len(e.daemon.node.Peers()),
+		"Peers": func() int {
+			if e.daemon == nil || e.daemon.node == nil {
+				return 0
+			}
+			return len(e.daemon.node.Peers())
+		}(),
 		"Hashrate":    fmt.Sprintf("%.2f", hashrate),
 		"Emitted":     float64(emitted) / 100_000_000,
 		"Remaining":   float64(remaining) / 100_000_000,

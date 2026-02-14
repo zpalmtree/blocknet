@@ -145,3 +145,37 @@ func TestDaemonHandleTxRejectsTrailingBytes(t *testing.T) {
 		t.Fatalf("mempool should remain empty after trailing-byte gossip ingest, size=%d", got)
 	}
 }
+
+func TestDaemonTxIngestRejectsUnsupportedTxVersion(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	// Isolate version gating in daemon ingest without unrelated canonical ring-member/storage coupling.
+	daemon.mempool = NewMempool(
+		DefaultMempoolConfig(),
+		func(_ [32]byte) bool { return false },
+		func(_, _ [32]byte) bool { return true },
+	)
+
+	tx := mustBuildValidRingCTBindingTestTx(t)
+	tx.Version = 2
+
+	if err := daemon.processTxData(tx.Serialize()); err != nil {
+		t.Fatalf("processTxData returned unexpected error: %v", err)
+	}
+
+	txID, err := tx.TxID()
+	if err != nil {
+		t.Fatalf("failed to compute txid: %v", err)
+	}
+	if _, exists := daemon.Mempool().GetTransaction(txID); exists {
+		t.Fatalf("unsupported-version tx was admitted through daemon ingest: %x", txID[:8])
+	}
+	if got := daemon.Mempool().Size(); got != 0 {
+		t.Fatalf("mempool should remain empty after unsupported-version ingest, size=%d", got)
+	}
+}

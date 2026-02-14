@@ -146,6 +146,7 @@ if status.NetworkID != expectedNetworkID || status.ChainID != expectedChainID {
   - `EncryptedMemo [128]byte` (always present, every output, every tx).
 - Memo size is always exactly `128` bytes.
 - Coinbase outputs also carry this field for uniformity (encrypted under deterministic coinbase path or set by coinbase-specific deterministic rule, but still fixed-size and present).
+  - Consensus enforces empty-envelope-only coinbase memo semantics (miners cannot embed arbitrary payloads in coinbase memos).
 
 ### Plaintext memo envelope (before encryption)
 
@@ -163,7 +164,8 @@ if status.NetworkID != expectedNetworkID || status.ChainID != expectedChainID {
 ### Encryption / decryption
 
 - Per-output stream mask derivation:
-  - `mask = SHA3-256(shared_secret || "memo" || output_index || block_domain_sep)`
+  - `block_domain_sep = "blocknet_mainnet"` (ASCII)
+  - `mask = SHA3-256(shared_secret || "memo" || uint32_le(output_index) || block_domain_sep)`
   - Expand mask to 128 bytes with counter mode:
     - `block_i = SHA3-256(mask || uint32_le(i))` for `i = 0..3`
     - concatenate to 128 bytes.

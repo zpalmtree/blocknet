@@ -172,9 +172,33 @@
                     "summary": "Confirmed transaction (in blockchain)",
                     "value": {
                       "tx": {
-                        "inputs": [{ "key_image": "d4e5f6...", "ring_size": 11 }],
-                        "outputs": [{ "commitment": "a1b2c3...", "range_proof_size": 674 }],
-                        "fee": 15000
+                        "version": 1,
+                        "inputs": [
+                          {
+                            "key_image": [206,194,102,91,117,127,68,44,128,196,45,250,102,215,110,191,198,108,77,236,91,173,42,44,240,161,206,21,137,3,217,104],
+                            "ring_members": [
+                              [226,131,206,64,181,243,28,67,77,209,63,49,60,73,151,89,90,209,74,106,163,255,119,131,60,185,95,37,147,5,24,172],
+                              [110,193,204,172,204,197,212,189,47,92,19,190,204,227,117,159,115,159,54,160,111,127,196,151,224,41,224,215,131,35,150,164]
+                            ],
+                            "ring_commitments": [
+                              [244,65,131,220,148,209,81,144,194,225,99,194,172,101,176,2,181,151,98,87,133,213,118,209,176,204,1,57,103,0,158,85],
+                              [227,105,135,213,239,147,102,10,53,157,38,16,29,213,153,189,151,99,51,202,204,88,135,235,168,65,66,228,199,214,91,184]
+                            ],
+                            "pseudo_output": [185,41,236,101,236,26,183,66,110,82,226,90,90,18,56,11,87,242,214,41,217,44,73,158,2,195,168,69,207,102,28,108],
+                            "ring_signature": "gGqM7cNe9fNWJnrrBzqo/CSrAowGo9OFVEUYyxIYr3WVUeAd1XVgO/hXi426JGVYtSk6QEZMLBDCVbV2Uq4br99gnVs4S/4GdsAxeOMpUlXjv4GgF8sKmVFDBZKXlD/8"
+                          }
+                        ],
+                        "outputs": [
+                          {
+                            "commitment": [57,12,140,125,114,71,52,44,216,16,15,47,111,119,13,101,214,112,229,142,3,81,216,174,142,79,110,172,52,47,194,49],
+                            "public_key": [183,176,135,22,235,63,193,40,150,185,98,35,23,116,148,40,119,51,194,142,232,186,83,189,181,107,136,36,87,125,83,236],
+                            "range_proof": "UTfDE/BxZuuznHRyDGLMqI4jjrPMqQ47hVuHEzfesKDfO8VhghbfAGS63COpoD+ZntGnzpdBYtfCWZrPAJuSa9yk7uLibfJWK5GrL3iec2VLDBd98yXp1GPE/cx8SwI22XBa7Rl/PulE7aLi2uRR8+aEfo34eozhJ5J4i6ujKUZNdsRObSDU0Knu1B9p18cKwvQDtJjH1nD5cIvf+A7HrM9U70ENyQ0q20XsXRmFwqds6Keswo7XgSnwCRqzciMUD35mCk56QPI6b+6DvFU6U583DZ/Ay2UmfDSaPRWx270jrgbX+jbduetO3lqK9+7fiaV9LI7mfO3CrA79pl35bLWEro+NBWEre9D6e/P75QgvlnHPfJy88rDZqbToipyAdj1ioT1eYm73jZAzY5d0uFuaB0CMFxuVQPs0BpHw9eGuXhqB9DohzfslG01Mmyt/PNVzwubimNucHjJqbIcpUHpYJlAB0ebwlRB2k5DoJHeHZdk6c0yISCQeVJ2T4D/vm86L/OApFN2lgA0udQqJFFnw4o5c3/su8LLRqqQ1UqjS/ZPNEugtoYGlO84A7NMbYLn/4hpoiEOT4Pg+DnpRnwfQL3M67DxO/5WL1PfxfOlKxGFFI43UrogBkJj6TOT3sKrB6aRgesR30hai8sPFTf0SQKkz4TPpB0nRTybwh63LKajCovkSI3iTdC7eMjPjVZkOF6Yclre/3Ep90lxXWSjDe/5JduyC64IE7pNQJeKwmdmA6ZplxPc2ecO3l5cLyowEGf6SdbRwYYBGMRSe4RG6Qy6Xp9RZZkO7i1SD9petOu8mSHPLuy7KB4c/6LyGw743d/EMp3Eg7ZrRO0cXE5v8OzF4RcbovdZP1DL60I8QvW/j43i5Mry3H8uNYT7o",
+                            "encrypted_amount": [81,216,32,197,195,239,128,5],
+                            "encrypted_memo": [58,136,174,57,150,222,80,232,1,134,91,54,152,101,78,191,82,0,165,250,9,57,185,157,122,29,123,40,43,248,35,64,65,243,84,135,216,108,102,159,204,191,224,231,61,126,115,32,173,10,117,112,3,36,30,117,34,16,169,36,121,142,248,109,67,242,124,242,208,97,48,49,220,181,216,210,239,27,50,31,206,173,55,127,98,97,229,71,216,93,142,236,127,38,226,50,25,7,47,121,85,208,248,246,109,205,30,84,194,1,199,135,232,146,216,249,79,97,151,111,29,31,160,29,25,244,80,29]
+                          }
+                        ],
+                        "fee": 15000,
+                        "tx_public_key": [194,138,112,166,28,117,16,161,205,137,33,108,161,108,255,202,234,73,135,71,126,134,219,204,185,112,70,252,46,24,56,78]
                       },
                       "block_height": 14205,
                       "confirmations": 3,
@@ -185,9 +209,33 @@
                     "summary": "Unconfirmed transaction (in mempool)",
                     "value": {
                       "tx": {
-                        "inputs": [{ "key_image": "f1e2d3...", "ring_size": 11 }],
-                        "outputs": [{ "commitment": "b2c3d4...", "range_proof_size": 674 }],
-                        "fee": 12000
+                        "version": 1,
+                        "inputs": [
+                          {
+                            "key_image": [206,194,102,91,117,127,68,44,128,196,45,250,102,215,110,191,198,108,77,236,91,173,42,44,240,161,206,21,137,3,217,104],
+                            "ring_members": [
+                              [226,131,206,64,181,243,28,67,77,209,63,49,60,73,151,89,90,209,74,106,163,255,119,131,60,185,95,37,147,5,24,172],
+                              [110,193,204,172,204,197,212,189,47,92,19,190,204,227,117,159,115,159,54,160,111,127,196,151,224,41,224,215,131,35,150,164]
+                            ],
+                            "ring_commitments": [
+                              [244,65,131,220,148,209,81,144,194,225,99,194,172,101,176,2,181,151,98,87,133,213,118,209,176,204,1,57,103,0,158,85],
+                              [227,105,135,213,239,147,102,10,53,157,38,16,29,213,153,189,151,99,51,202,204,88,135,235,168,65,66,228,199,214,91,184]
+                            ],
+                            "pseudo_output": [185,41,236,101,236,26,183,66,110,82,226,90,90,18,56,11,87,242,214,41,217,44,73,158,2,195,168,69,207,102,28,108],
+                            "ring_signature": "gGqM7cNe9fNWJnrrBzqo/CSrAowGo9OFVEUYyxIYr3WVUeAd1XVgO/hXi426JGVYtSk6QEZMLBDCVbV2Uq4br99gnVs4S/4GdsAxeOMpUlXjv4GgF8sKmVFDBZKXlD/8"
+                          }
+                        ],
+                        "outputs": [
+                          {
+                            "commitment": [57,12,140,125,114,71,52,44,216,16,15,47,111,119,13,101,214,112,229,142,3,81,216,174,142,79,110,172,52,47,194,49],
+                            "public_key": [183,176,135,22,235,63,193,40,150,185,98,35,23,116,148,40,119,51,194,142,232,186,83,189,181,107,136,36,87,125,83,236],
+                            "range_proof": "UTfDE/BxZuuznHRyDGLMqI4jjrPMqQ47hVuHEzfesKDfO8VhghbfAGS63COpoD+ZntGnzpdBYtfCWZrPAJuSa9yk7uLibfJWK5GrL3iec2VLDBd98yXp1GPE/cx8SwI22XBa7Rl/PulE7aLi2uRR8+aEfo34eozhJ5J4i6ujKUZNdsRObSDU0Knu1B9p18cKwvQDtJjH1nD5cIvf+A7HrM9U70ENyQ0q20XsXRmFwqds6Keswo7XgSnwCRqzciMUD35mCk56QPI6b+6DvFU6U583DZ/Ay2UmfDSaPRWx270jrgbX+jbduetO3lqK9+7fiaV9LI7mfO3CrA79pl35bLWEro+NBWEre9D6e/P75QgvlnHPfJy88rDZqbToipyAdj1ioT1eYm73jZAzY5d0uFuaB0CMFxuVQPs0BpHw9eGuXhqB9DohzfslG01Mmyt/PNVzwubimNucHjJqbIcpUHpYJlAB0ebwlRB2k5DoJHeHZdk6c0yISCQeVJ2T4D/vm86L/OApFN2lgA0udQqJFFnw4o5c3/su8LLRqqQ1UqjS/ZPNEugtoYGlO84A7NMbYLn/4hpoiEOT4Pg+DnpRnwfQL3M67DxO/5WL1PfxfOlKxGFFI43UrogBkJj6TOT3sKrB6aRgesR30hai8sPFTf0SQKkz4TPpB0nRTybwh63LKajCovkSI3iTdC7eMjPjVZkOF6Yclre/3Ep90lxXWSjDe/5JduyC64IE7pNQJeKwmdmA6ZplxPc2ecO3l5cLyowEGf6SdbRwYYBGMRSe4RG6Qy6Xp9RZZkO7i1SD9petOu8mSHPLuy7KB4c/6LyGw743d/EMp3Eg7ZrRO0cXE5v8OzF4RcbovdZP1DL60I8QvW/j43i5Mry3H8uNYT7o",
+                            "encrypted_amount": [81,216,32,197,195,239,128,5],
+                            "encrypted_memo": [58,136,174,57,150,222,80,232,1,134,91,54,152,101,78,191,82,0,165,250,9,57,185,157,122,29,123,40,43,248,35,64,65,243,84,135,216,108,102,159,204,191,224,231,61,126,115,32,173,10,117,112,3,36,30,117,34,16,169,36,121,142,248,109,67,242,124,242,208,97,48,49,220,181,216,210,239,27,50,31,206,173,55,127,98,97,229,71,216,93,142,236,127,38,226,50,25,7,47,121,85,208,248,246,109,205,30,84,194,1,199,135,232,146,216,249,79,97,151,111,29,31,160,29,25,244,80,29]
+                          }
+                        ],
+                        "fee": 12000,
+                        "tx_public_key": [194,138,112,166,28,117,16,161,205,137,33,108,161,108,255,202,234,73,135,71,126,134,219,204,185,112,70,252,46,24,56,78]
                       },
                       "confirmations": 0,
                       "in_mempool": true
@@ -670,6 +718,15 @@
         "tags": ["Wallet"],
         "summary": "Send funds",
         "description": "Builds a privacy-preserving transaction using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with ring size 11), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_fee, fee_per_byte * tx_size). Requires unlocked full wallet (not view-only).",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 128 },
+            "description": "Optional idempotency key for retry-safe client behavior. Duplicate requests with the same key and identical JSON payload replay the original response for a bounded window (~10 minutes). Reusing a key with a different payload fails with 409."
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1445,12 +1502,85 @@
           "fee": 15000
         }
       },
+      "Bytes8": {
+        "type": "array",
+        "description": "8-byte value encoded as a JSON array of integers [0..255]. This matches Go's default JSON encoding for `[8]byte`.",
+        "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "minItems": 8,
+        "maxItems": 8
+      },
+      "Bytes32": {
+        "type": "array",
+        "description": "32-byte value encoded as a JSON array of integers [0..255]. This matches Go's default JSON encoding for `[32]byte`.",
+        "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "minItems": 32,
+        "maxItems": 32
+      },
+      "Bytes128": {
+        "type": "array",
+        "description": "128-byte value encoded as a JSON array of integers [0..255]. This matches Go's default JSON encoding for `[128]byte` (used for `encrypted_memo`).",
+        "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "minItems": 128,
+        "maxItems": 128
+      },
+      "TxInput": {
+        "type": "object",
+        "properties": {
+          "key_image": { "$ref": "#/components/schemas/Bytes32" },
+          "ring_members": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Bytes32" },
+            "description": "Ring member one-time public keys (real + decoys)"
+          },
+          "ring_commitments": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Bytes32" },
+            "description": "Pedersen commitments for each ring member"
+          },
+          "pseudo_output": { "$ref": "#/components/schemas/Bytes32" },
+          "ring_signature": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64-encoded ring signature bytes"
+          }
+        }
+      },
+      "TxOutput": {
+        "type": "object",
+        "properties": {
+          "commitment": { "$ref": "#/components/schemas/Bytes32" },
+          "public_key": { "$ref": "#/components/schemas/Bytes32" },
+          "range_proof": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64-encoded Bulletproof range proof bytes (omitted in some contexts)"
+          },
+          "encrypted_amount": { "$ref": "#/components/schemas/Bytes8" },
+          "encrypted_memo": { "$ref": "#/components/schemas/Bytes128" }
+        }
+      },
+      "Transaction": {
+        "type": "object",
+        "properties": {
+          "version": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "inputs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TxInput" }
+          },
+          "outputs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/TxOutput" }
+          },
+          "fee": { "type": "integer", "description": "Fee in atomic units" },
+          "tx_public_key": { "$ref": "#/components/schemas/Bytes32" }
+        }
+      },
       "TxLookupResult": {
         "type": "object",
         "properties": {
           "tx": {
-            "type": "object",
-            "description": "Full serialized transaction object"
+            "$ref": "#/components/schemas/Transaction",
+            "description": "Full transaction object. NOTE: byte arrays are encoded as JSON arrays of integers (Go default encoding)."
           },
           "block_height": {
             "type": "integer",
@@ -1467,9 +1597,32 @@
         },
         "example": {
           "tx": {
-            "inputs": [{ "key_image": "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4", "ring_size": 11 }],
-            "outputs": [{ "commitment": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2", "range_proof_size": 674 }],
-            "fee": 15000
+            "version": 1,
+            "inputs": [
+              {
+                "key_image": [206,194,102,91,117,127,68,44,128,196,45,250,102,215,110,191,198,108,77,236,91,173,42,44,240,161,206,21,137,3,217,104],
+                "ring_members": [
+                  [226,131,206,64,181,243,28,67,77,209,63,49,60,73,151,89,90,209,74,106,163,255,119,131,60,185,95,37,147,5,24,172],
+                  [110,193,204,172,204,197,212,189,47,92,19,190,204,227,117,159,115,159,54,160,111,127,196,151,224,41,224,215,131,35,150,164]
+                ],
+                "ring_commitments": [
+                  [244,65,131,220,148,209,81,144,194,225,99,194,172,101,176,2,181,151,98,87,133,213,118,209,176,204,1,57,103,0,158,85],
+                  [227,105,135,213,239,147,102,10,53,157,38,16,29,213,153,189,151,99,51,202,204,88,135,235,168,65,66,228,199,214,91,184]
+                ],
+                "pseudo_output": [185,41,236,101,236,26,183,66,110,82,226,90,90,18,56,11,87,242,214,41,217,44,73,158,2,195,168,69,207,102,28,108],
+                "ring_signature": "gGqM7cNe9fNWJnrrBzqo/CSrAowGo9OFVEUYyxIYr3WVUeAd1XVgO/hXi426JGVYtSk6QEZMLBDCVbV2Uq4br99gnVs4S/4GdsAxeOMpUlXjv4GgF8sKmVFDBZKXlD/8"
+              }
+            ],
+            "outputs": [
+              {
+                "commitment": [57,12,140,125,114,71,52,44,216,16,15,47,111,119,13,101,214,112,229,142,3,81,216,174,142,79,110,172,52,47,194,49],
+                "public_key": [183,176,135,22,235,63,193,40,150,185,98,35,23,116,148,40,119,51,194,142,232,186,83,189,181,107,136,36,87,125,83,236],
+                "encrypted_amount": [81,216,32,197,195,239,128,5],
+                "encrypted_memo": [58,136,174,57,150,222,80,232,1,134,91,54,152,101,78,191,82,0,165,250,9,57,185,157,122,29,123,40,43,248,35,64,65,243,84,135,216,108,102,159,204,191,224,231,61,126,115,32,173,10,117,112,3,36,30,117,34,16,169,36,121,142,248,109,67,242,124,242,208,97,48,49,220,181,216,210,239,27,50,31,206,173,55,127,98,97,229,71,216,93,142,236,127,38,226,50,25,7,47,121,85,208,248,246,109,205,30,84,194,1,199,135,232,146,216,249,79,97,151,111,29,31,160,29,25,244,80,29]
+              }
+            ],
+            "fee": 15000,
+            "tx_public_key": [194,138,112,166,28,117,16,161,205,137,33,108,161,108,255,202,234,73,135,71,126,134,219,204,185,112,70,252,46,24,56,78]
           },
           "block_height": 14205,
           "confirmations": 3,
@@ -1543,7 +1696,12 @@
           "is_coinbase": { "type": "boolean", "description": "True if this is a mining reward output" },
           "spent": { "type": "boolean", "description": "True if already used as an input" },
           "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent, 0 means unspent)" },
-          "memo_hex": { "type": "string", "description": "Hex-encoded decrypted memo payload (present only when the output carried a non-empty memo)" }
+          "memo_hex": {
+            "type": "string",
+            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
+            "maxLength": 248,
+            "description": "Hex-encoded decrypted memo payload (present only when the output carried a non-empty memo). Max 248 hex chars (124 bytes)."
+          }
         },
         "example": {
           "txid": "c7f2e1d3a4b596870123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1569,14 +1727,33 @@
           },
           "memo_text": {
             "type": "string",
-            "description": "Optional UTF-8 memo text. Mutually exclusive with memo_hex. Max 124 bytes after UTF-8 encoding."
+            "maxLength": 124,
+            "description": "Optional UTF-8 memo text. Mutually exclusive with memo_hex. Server enforces max 124 BYTES after UTF-8 encoding; maxLength here is best-effort (character count)."
           },
           "memo_hex": {
             "type": "string",
-            "pattern": "^[A-Fa-f0-9]*$",
-            "description": "Optional memo payload in hex. Mutually exclusive with memo_text. Max 248 hex chars (124 bytes)."
+            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
+            "maxLength": 248,
+            "description": "Optional memo payload in hex. Mutually exclusive with memo_text. Max 248 hex chars (124 bytes). Pattern enforces even-length hex."
           }
         },
+        "oneOf": [
+          {
+            "required": ["address", "amount"],
+            "description": "No memo provided",
+            "not": { "anyOf": [{ "required": ["memo_text"] }, { "required": ["memo_hex"] }] }
+          },
+          {
+            "required": ["address", "amount", "memo_text"],
+            "description": "Memo provided as UTF-8 text",
+            "not": { "required": ["memo_hex"] }
+          },
+          {
+            "required": ["address", "amount", "memo_hex"],
+            "description": "Memo provided as hex bytes",
+            "not": { "required": ["memo_text"] }
+          }
+        ],
         "example": {
           "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
           "amount": 500000000,
@@ -1589,7 +1766,12 @@
           "txid": { "type": "string", "description": "Transaction hash (64 hex chars)" },
           "fee": { "type": "integer", "description": "Fee paid in atomic units" },
           "change": { "type": "integer", "description": "Change returned to wallet in atomic units" },
-          "memo_hex": { "type": "string", "description": "Hex-encoded memo payload (present only if one was provided in the request)" }
+          "memo_hex": {
+            "type": "string",
+            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
+            "maxLength": 248,
+            "description": "Hex-encoded memo payload (present only if one was provided in the request). Max 248 hex chars (124 bytes)."
+          }
         },
         "example": {
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",

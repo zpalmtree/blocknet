@@ -44,6 +44,11 @@ type APIServer struct {
 	submitBlockLimiter *perIPLimiter
 	submitBlockSem     chan struct{}
 
+	// Route-scoped abuse controls for expensive tx construction/signing.
+	sendLimiter *perIPLimiter
+	sendSem     chan struct{}
+	sendIdem    *idempotencyCache
+
 	// Wallet unlock brute-force controls.
 	unlockAttempts *unlockAttemptTracker
 }
@@ -188,6 +193,9 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 		password:           password,
 		submitBlockLimiter: newPerIPLimiter(rate.Limit(2), 4, 10*time.Minute),
 		submitBlockSem:     make(chan struct{}, 2),
+		sendLimiter:        newPerIPLimiter(rate.Limit(0.5), 2, 10*time.Minute), // ~1 req / 2s, burst 2
+		sendSem:            make(chan struct{}, 1),
+		sendIdem:           newIdempotencyCache(10*time.Minute, 1024),
 		unlockAttempts:     newUnlockAttemptTracker(),
 	}
 }

@@ -90,20 +90,46 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		totalSend += r.Amount
 	}
 
-	// Estimate fee (will refine after building)
-	estimatedSize := 200 + len(recipients)*100 // rough estimate
-	fee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
+	// Estimate fee before building by using a conservative size model and iterating
+	// through input selection (fee affects how many inputs we need).
+	fee := b.config.MinFee
+	var inputs []*OwnedOutput
+	var err error
+	for i := 0; i < 4; i++ {
+		inputs, err = SelectInputs(b.wallet.MatureOutputs(currentHeight), totalSend+fee)
+		if err != nil {
+			return nil, fmt.Errorf("insufficient funds: %w", err)
+		}
 
-	// Select inputs from mature outputs only
-	inputs, err := SelectInputs(b.wallet.MatureOutputs(currentHeight), totalSend+fee)
-	if err != nil {
-		return nil, fmt.Errorf("insufficient funds: %w", err)
+		var totalInput uint64
+		for _, inp := range inputs {
+			totalInput += inp.Amount
+		}
+		if totalInput < totalSend+fee {
+			return nil, fmt.Errorf("insufficient funds after selection: have %d need %d", totalInput, totalSend+fee)
+		}
+
+		change := totalInput - totalSend - fee
+		outputCount := len(recipients)
+		if change > 0 {
+			outputCount++
+		}
+
+		estimatedSize := estimateTxSizeBytes(len(inputs), outputCount, b.config.RingSize)
+		requiredFee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
+		if requiredFee <= fee {
+			break
+		}
+		fee = requiredFee
 	}
 
-	// Calculate total input and change
+	// Calculate total input and final change under the final fee.
 	var totalInput uint64
 	for _, inp := range inputs {
 		totalInput += inp.Amount
+	}
+	if totalInput < totalSend+fee {
+		return nil, fmt.Errorf("insufficient funds after fee adjustment: have %d need %d", totalInput, totalSend+fee)
 	}
 	change := totalInput - totalSend - fee
 
@@ -285,6 +311,26 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		Fee:          fee,
 		Change:       change,
 	}, nil
+}
+
+func estimateTxSizeBytes(inputCount, outputCount, ringSize int) int {
+	// Prefix: version (1) + txPubKey (32) + inputCount (4) + outputCount (4) + fee (8)
+	size := 1 + 32 + 4 + 4 + 8
+
+	// Conservative fixed upper bounds:
+	// - Range proofs are usually smaller than this, but we over-estimate to avoid fee underpayment.
+	const maxRangeProofBytes = 1024
+
+	// Each output: pubkey + commitment + encrypted_amount + encrypted_memo + range_proof_len + range_proof
+	size += outputCount * (32 + 32 + 8 + MemoSize + 4 + maxRangeProofBytes)
+
+	// Signature payload size is fixed for RingCT given ringSize:
+	// 32 + n*32 + n*32 + 32 + 32 = 96 + 64*n
+	ringSigBytes := 96 + 64*ringSize
+
+	// Each input: key_image + pseudo_output + ring_size + ring_members + ring_commitments + sig_len + signature
+	size += inputCount * (32 + 32 + 4 + ringSize*32 + ringSize*32 + 4 + ringSigBytes)
+	return size
 }
 
 // sumBlindings adds blinding factors using proper scalar arithmetic
