@@ -125,4 +125,3 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 		}
 	})
 }
-

@@ -76,4 +76,3 @@ func TestMineBlock_WinningTimestampMustMatchPoWHeaderBytes(t *testing.T) {
 		t.Fatalf("expected PoW to pass when nonce=%d is paired with winning timestamp=%d", winningNonce, winningTimestamp)
 	}
 }
-

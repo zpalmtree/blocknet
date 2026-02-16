@@ -312,13 +312,13 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	miner.config.PeerCount = func() int { return len(node.Peers()) }
 
 	d := &Daemon{
-		chain:       chain,
-		mempool:     mempool,
-		miner:       miner,
-		node:        node,
-		stealthKeys: stealthKeys,
-		ctx:         ctx,
-		cancel:      cancel,
+		chain:                  chain,
+		mempool:                mempool,
+		miner:                  miner,
+		node:                   node,
+		stealthKeys:            stealthKeys,
+		ctx:                    ctx,
+		cancel:                 cancel,
 		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
 	}
 

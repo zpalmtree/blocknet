@@ -1207,10 +1207,6 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 
 	// Does this create a heavier chain?
 	if blockWork > c.totalWork {
-		if err := c.enforceReorgFinalityLocked(hash); err != nil {
-			return false, false, err
-		}
-		// Need to reorganize to this chain
 		if err := c.reorganizeTo(hash); err != nil {
 			// Reorg failed - remove from memory
 			c.cacheForgetLocked(hash)
@@ -1527,6 +1523,56 @@ func (c *Chain) nextDifficultyLocked() uint64 {
 
 // reorganizeTo switches the main chain to end at newTip
 func (c *Chain) reorganizeTo(newTip [32]byte) error {
+	newBlock := c.blocks[newTip]
+	if newBlock == nil {
+		if loaded, _ := c.storage.GetBlock(newTip); loaded != nil {
+			c.blocks[newTip] = loaded
+			c.cacheTouchLocked(newTip)
+			c.cacheTrimLocked()
+			newBlock = loaded
+		} else {
+			return fmt.Errorf("reorganizeTo: new tip block not found")
+		}
+	}
+
+	// Fast path: simple chain extension (parent is current tip).
+	// Avoids the O(height) ancestor walks that dominate sync time.
+	if newBlock.Header.PrevHash == c.bestHash {
+		newTipWork, err := c.cumulativeWorkAtLocked(newTip)
+		if err != nil {
+			return fmt.Errorf("failed to compute new tip work: %w", err)
+		}
+		reorgCommit := &ReorgCommit{
+			Connect:   []*Block{newBlock},
+			NewTip:    newTip,
+			NewHeight: newBlock.Header.Height,
+			NewWork:   newTipWork,
+		}
+		if err := c.storage.CommitReorg(reorgCommit); err != nil {
+			return fmt.Errorf("failed to persist chain extension: %w", err)
+		}
+		c.bestHash = newTip
+		c.height = newBlock.Header.Height
+		c.totalWork = newTipWork
+		c.byHeight[newBlock.Header.Height] = newTip
+		c.cacheTouchLocked(newTip)
+		c.timestamps = append(c.timestamps, newBlock.Header.Timestamp)
+		if len(c.timestamps) > LWMAWindow+1 {
+			c.timestamps = c.timestamps[1:]
+		}
+		for _, tx := range newBlock.Transactions {
+			if !tx.IsCoinbase() {
+				for _, input := range tx.Inputs {
+					c.keyImages[input.KeyImage] = newBlock.Header.Height
+				}
+			}
+		}
+		c.canonicalRingIndexDirty = true
+		c.cacheTrimLocked()
+		return nil
+	}
+
+	// Slow path: actual reorg — need ancestor walks.
 	if err := c.enforceReorgFinalityLocked(newTip); err != nil {
 		return err
 	}
@@ -1559,7 +1605,6 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 	}
 
 	// Collect blocks to connect
-	newBlock := c.blocks[newTip]
 	var connect []*Block
 	for h := newBlock.Header.Height; h > commonHeight; h-- {
 		connect = append([]*Block{c.blocks[newPath[h]]}, connect...)
