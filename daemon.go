@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -190,12 +191,12 @@ type DaemonConfig struct {
 
 // DefaultSeedNodes are the hardcoded bootstrap nodes
 var DefaultSeedNodes = []string{
-	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWB4FY5fLRpwMsYXoVSYb3hWmiDCSJLysVSX3Z38mnkpX6",
-	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWSc7bV4H7V8pUeKphJ9G2c67rLbiHUuzYj3HHV5Wtf3NS",
-	"/ip4/46.62.252.254/tcp/28080/p2p/12D3KooWHXC9xcREsVpcukZdqXyL83k2vKrdNdfsBpuZ7P9Hpmqd",
-	"/ip4/46.62.202.165/tcp/28080/p2p/12D3KooWPaMpej16rnr8CC1ALydc4ECkDmwzAcNddS2XDRV8JYNr",
-	"/ip4/46.62.249.240/tcp/28080/p2p/12D3KooWSC4Gezy61GViYAAAMrz4Vv2id4YFsUtFR4qZrb5QtL6F",
-	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWPjygAsXysJgr4kdmHGdUmwwPX6jbrdszGBhjRZv2g5w8",
+	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWLhWY99sixSJDTfN8AYmSgujC5wz6Gd3bYRP9oDKK8pxa",
+	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWCiHt8wcWKu8A2t38vptZ1RYp1cjRfb8NDro1cA9NmiAS",
+	"/ip4/46.62.252.254/tcp/28080/p2p/12D3KooWN8sDhYjR6tFmVmMRH8P9g1iCQvRLaP2Dt2BYhJFEvyZ5",
+	"/ip4/46.62.202.165/tcp/28080/p2p/12D3KooWFfDDcJNbrMF3x8GF6icGBP4VpWPXTvrACg6Cieanm3Rw",
+	"/ip4/46.62.249.240/tcp/28080/p2p/12D3KooWBqRDpEu4DBxz6yxMwBc6n3efEkaXwkUoSPbv1ut9tF7E",
+	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWECNySEaYawJdXgjqDAtKv3MzU1FZ8mrvh37oCh8fmsJY",
 }
 
 // DefaultDaemonConfig returns sensible defaults
@@ -451,6 +452,13 @@ func (d *Daemon) notifyMinedBlock(block *Block) {
 func (d *Daemon) Start() error {
 	// Start P2P node
 	if err := d.node.Start(); err != nil {
+		// Bootstrap assist: if enabled, write peer.txt even when we couldn't connect to seeds.
+		// This lets operators capture the peer ID for seed lists.
+		if strings.TrimSpace(os.Getenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL")) != "" {
+			if werr := d.node.WritePeerFile("peer.txt"); werr != nil {
+				log.Printf("Warning: failed to write peer.txt on start failure: %v", werr)
+			}
+		}
 		return fmt.Errorf("failed to start P2P: %w", err)
 	}
 

@@ -94,6 +94,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Warning: failed to set BLOCKNET_P2P_KEY: %v\n", err)
 		}
 	}
+	// Seed bootstrap assist: if we fail to start due to missing seed reachability,
+	// still export our peer addresses so operators can bake updated seed IDs.
+	if *seedMode && strings.TrimSpace(os.Getenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL")) == "" {
+		_ = os.Setenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL", "1")
+	}
 
 	// Normal mode: start interactive CLI
 	seedNodes := DefaultSeedNodes

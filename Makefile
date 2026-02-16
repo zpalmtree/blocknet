@@ -83,8 +83,10 @@ deps:
 # Deploy to seed node
 deploy:
 	@echo "Deploying to seed node..."
-	rsync -avz --exclude 'target/' --exclude '.git/' --exclude '*.dat' --exclude 'data/' --exclude 'releases/' . blocknet:~/blocknet/
-	ssh blocknet "cd ~/blocknet && make all"
+	for host in blocknet bnt-0 bnt-1 bnt-2 bnt-3 bnt-4; do \
+		rsync -avz --exclude 'target/' --exclude '.git/' --exclude '*.dat' --exclude 'data/' --exclude 'releases/' . $$host:~/blocknet/; \
+		ssh $$host "cd ~/blocknet && make all"; \
+	done
 
 # Deploy release to website
 deploy-release: release
