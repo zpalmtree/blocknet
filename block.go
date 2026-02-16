@@ -583,10 +583,13 @@ func (c *Chain) VerifyChain() []ChainViolation {
 
 		// --- Difficulty check ---
 		var expectedDiff uint64
-		if h < uint64(LWMAWindow) {
+		// Consensus derives a block's difficulty from its parent context:
+		// the LWMA window ends at height (h-1), not at h.
+		parentHeight := h - 1
+		if parentHeight < uint64(LWMAWindow) {
 			expectedDiff = MinDifficulty
 		} else {
-			expectedDiff = computeLWMA(blocks, h)
+			expectedDiff = computeLWMA(blocks, parentHeight)
 		}
 		if block.Header.Difficulty != expectedDiff {
 			violations = append(violations, ChainViolation{
