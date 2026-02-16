@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"blocknet/wallet"
 )
@@ -16,7 +18,7 @@ func main() {
 	walletFile := flag.String("wallet", "wallet.dat", "Path to wallet file")
 	dataDir := flag.String("data", "./data", "Data directory")
 	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
-	testMode := flag.Bool("test", false, "Run in test mode (run crypto tests)")
+	seedMode := flag.Bool("seed", false, "Run as seed node (persistent P2P identity)")
 	recover := flag.Bool("recover", false, "Recover wallet from mnemonic seed")
 	daemonMode := flag.Bool("daemon", false, "Run headless (no interactive shell)")
 	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
@@ -24,28 +26,54 @@ func main() {
 	noColor := flag.Bool("nocolor", false, "Disable colored output")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
-	viewPriv := flag.String("view-priv", "", "View private key (hex) for view-only wallet")
+	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
+	viewPrivDeprecated := flag.String("view-priv", "", "DEPRECATED (insecure): do not pass view private key via CLI; use --view-priv-env/BLOCKNET_VIEW_PRIV")
+	viewPrivEnv := flag.String("view-priv-env", "BLOCKNET_VIEW_PRIV", "Environment variable name containing view private key (hex) for view-only wallet")
 	flag.Parse()
-
-	// Test mode runs the crypto/chain tests
-	if *testMode {
-		runTests()
-		return
-	}
 
 	// View-only wallet creation mode
 	if *viewOnly {
-		if *spendPub == "" || *viewPriv == "" {
-			fmt.Fprintln(os.Stderr, "Error: --viewonly requires --spend-pub and --view-priv")
-			fmt.Fprintln(os.Stderr, "Usage: blocknet --viewonly --spend-pub <hex> --view-priv <hex>")
+		if *viewPrivDeprecated != "" {
+			fmt.Fprintln(os.Stderr, "Error: --view-priv no longer accepts a private key on the command line.")
+			fmt.Fprintln(os.Stderr, "Set the key in an environment variable and use --view-priv-env to pick the name (default: BLOCKNET_VIEW_PRIV).")
+			fmt.Fprintln(os.Stderr, "Example: BLOCKNET_VIEW_PRIV=<hex> blocknet --viewonly --spend-pub <hex>")
 			os.Exit(1)
 		}
 
-		if err := createViewOnlyWallet(*walletFile, *spendPub, *viewPriv); err != nil {
+		if *spendPub == "" {
+			fmt.Fprintln(os.Stderr, "Error: --viewonly requires --spend-pub")
+			fmt.Fprintln(os.Stderr, "Usage: BLOCKNET_VIEW_PRIV=<hex> blocknet --viewonly --spend-pub <hex>")
+			os.Exit(1)
+		}
+
+		envName := strings.TrimSpace(*viewPrivEnv)
+		if envName == "" {
+			fmt.Fprintln(os.Stderr, "Error: --view-priv-env must not be empty")
+			os.Exit(1)
+		}
+		viewPrivHex := strings.TrimSpace(os.Getenv(envName))
+		if viewPrivHex == "" {
+			fmt.Fprintf(os.Stderr, "Error: environment variable %s is not set (expected 64 hex chars)\n", envName)
+			fmt.Fprintln(os.Stderr, "Usage: BLOCKNET_VIEW_PRIV=<hex> blocknet --viewonly --spend-pub <hex>")
+			os.Exit(1)
+		}
+
+		// Reduce lifetime in-process (does not remove from parent shell env).
+		_ = os.Unsetenv(envName)
+
+		if err := createViewOnlyWallet(*walletFile, *spendPub, viewPrivHex); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		return
+	}
+
+	// Seed mode: ensure P2P identity is persistent (and stable across restarts).
+	// Honor explicit env override if user set it themselves.
+	if *seedMode && strings.TrimSpace(os.Getenv("BLOCKNET_P2P_KEY")) == "" {
+		if err := os.Setenv("BLOCKNET_P2P_KEY", filepath.Join(*dataDir, "identity.key")); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set BLOCKNET_P2P_KEY: %v\n", err)
+		}
 	}
 
 	// Normal mode: start interactive CLI

@@ -1,11 +1,10 @@
 package wallet
 
 import (
+	"crypto/sha3"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-
-	"golang.org/x/crypto/sha3"
 )
 
 // BlockData is the minimal block info needed for scanning
@@ -176,16 +175,14 @@ func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
 // DeriveBlinding derives a blinding factor from the shared secret and output index.
 // blinding = Hash("blocknet_blinding" || shared_secret || output_index)
 func DeriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_blinding"))
-	h.Write(sharedSecret[:])
 	var outputIndexBytes [4]byte
 	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
-	h.Write(outputIndexBytes[:])
-	sum := h.Sum(nil)
-
-	var blinding [32]byte
-	copy(blinding[:], sum)
+	const tag = "blocknet_blinding"
+	b := make([]byte, 0, len(tag)+len(sharedSecret)+len(outputIndexBytes))
+	b = append(b, tag...)
+	b = append(b, sharedSecret[:]...)
+	b = append(b, outputIndexBytes[:]...)
+	blinding := sha3.Sum256(b)
 
 	// Reduce modulo the curve order to ensure it's a valid scalar
 	// For Ristretto255, scalars are mod 2^252 + 27742317777372353535851937790883648493
@@ -197,20 +194,17 @@ func DeriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
 // DeriveCoinbaseConsensusBlinding derives the deterministic consensus blinding
 // for coinbase outputs from public transaction data.
 func DeriveCoinbaseConsensusBlinding(txPubKey [32]byte, blockHeight uint64, outputIndex int) [32]byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_coinbase_consensus_blinding"))
-	h.Write(txPubKey[:])
 	var blockHeightBytes [8]byte
 	binary.LittleEndian.PutUint64(blockHeightBytes[:], blockHeight)
-	h.Write(blockHeightBytes[:])
 	var outputIndexBytes [4]byte
 	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
-	h.Write(outputIndexBytes[:])
-	sum := h.Sum(nil)
-
-	var blinding [32]byte
-	copy(blinding[:], sum)
-	return blinding
+	const tag = "blocknet_coinbase_consensus_blinding"
+	b := make([]byte, 0, len(tag)+len(txPubKey)+len(blockHeightBytes)+len(outputIndexBytes))
+	b = append(b, tag...)
+	b = append(b, txPubKey[:]...)
+	b = append(b, blockHeightBytes[:]...)
+	b = append(b, outputIndexBytes[:]...)
+	return sha3.Sum256(b)
 }
 
 // BlockToScanData converts a serialized block to scanner format

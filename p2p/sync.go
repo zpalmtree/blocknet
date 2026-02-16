@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +117,12 @@ type SyncManager struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// statusSyncCh serializes/rate-limits sync checks triggered by inbound status
+	// messages (and other external triggers). This prevents goroutine churn when
+	// peers spam status updates.
+	statusSyncCh          chan struct{}
+	statusSyncMinInterval time.Duration
 }
 
 func (sm *SyncManager) penalizeInvalidBlockPeer(pid peer.ID, reason string) {
@@ -162,6 +169,9 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		getBlockMeta:      cfg.GetBlockMeta,
 		getBlockHash:      cfg.GetBlockHash,
 		downloadBuffer:    make(map[uint64]DownloadedBlock),
+		statusSyncCh:      make(chan struct{}, 1),
+		// Debounce status-triggered sync checks; periodic syncLoop still runs.
+		statusSyncMinInterval: 2 * time.Second,
 	}
 	if cfg.FetchBlocksByHash != nil {
 		sm.fetchBlocksByHash = cfg.FetchBlocksByHash
@@ -180,6 +190,7 @@ func (sm *SyncManager) Start(ctx context.Context) {
 
 	// Start sync loop
 	go sm.syncLoop()
+	go sm.statusSyncLoop()
 }
 
 // Stop halts sync operations
@@ -238,7 +249,9 @@ func (sm *SyncManager) handleStatus(s network.Stream, data []byte) {
 
 	// Check if we need to sync from this peer
 	if status.TotalWork > ourStatus.TotalWork {
-		go sm.syncFrom(s.Conn().RemotePeer(), status)
+		// Don't spawn sync goroutines per inbound status message. Instead trigger
+		// a serialized, multi-peer arbitration pass.
+		sm.requestSyncCheck()
 	}
 }
 
@@ -424,7 +437,45 @@ func (sm *SyncManager) syncLoop() {
 
 // TriggerSync forces a sync check (called when new peer connects)
 func (sm *SyncManager) TriggerSync() {
-	go sm.checkSync()
+	sm.requestSyncCheck()
+}
+
+func (sm *SyncManager) requestSyncCheck() {
+	// Coalesce triggers (buffer size 1).
+	select {
+	case sm.statusSyncCh <- struct{}{}:
+	default:
+	}
+}
+
+func (sm *SyncManager) statusSyncLoop() {
+	// ctx may be nil when Start wasn't called; in that case this loop can't run.
+	if sm.ctx == nil {
+		return
+	}
+
+	var lastRun time.Time
+	for {
+		select {
+		case <-sm.ctx.Done():
+			return
+		case <-sm.statusSyncCh:
+			// Debounce to bound how often status spam can force work.
+			if !lastRun.IsZero() {
+				if wait := sm.statusSyncMinInterval - time.Since(lastRun); wait > 0 {
+					timer := time.NewTimer(wait)
+					select {
+					case <-timer.C:
+					case <-sm.ctx.Done():
+						timer.Stop()
+						return
+					}
+				}
+			}
+			lastRun = time.Now()
+			sm.checkSync()
+		}
+	}
 }
 
 // checkSync checks if we're behind and need to sync
@@ -720,7 +771,8 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 			}
 
 			// Process block (with orphan recovery for reorg sync).
-			if err := sm.ProcessBlockWithRecoveryCtx(ctx, blockData, peers); err != nil {
+			accepted, err := sm.ProcessBlockWithRecoveryCtx(ctx, blockData, peers)
+			if err != nil {
 				// Non-orphan rejection here indicates invalid block proof/data.
 				// Attribute to source peer when available and penalize deterministically.
 				if sourcePeer != "" && !sm.isOrphanErr(err) && !sm.isDuplicateErr(err) {
@@ -728,6 +780,10 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 				}
 				log.Printf("[sync] block %d failed: %v", nextHeight, err)
 				return
+			}
+			// Only reward after a block has been accepted (not merely downloaded/queued).
+			if accepted && sourcePeer != "" {
+				sm.node.RewardPeer(sourcePeer)
 			}
 
 			// Update progress
@@ -822,8 +878,6 @@ func (sm *SyncManager) downloader(ctx context.Context, p peer.ID, workChan <-cha
 				height := work.Start + uint64(i)
 				select {
 				case blockChan <- DownloadedBlock{Height: height, Data: blockData, Peer: p}:
-					// Reward peer for valid data
-					sm.node.RewardPeer(p)
 				case <-ctx.Done():
 					return
 				}
@@ -849,28 +903,35 @@ func (sm *SyncManager) isDuplicateErr(err error) bool {
 	return sm.isDuplicateError(err)
 }
 
-func (sm *SyncManager) ProcessBlockWithRecovery(blockData []byte, peers []PeerStatus) error {
+func (sm *SyncManager) ProcessBlockWithRecovery(blockData []byte, peers []PeerStatus) (bool, error) {
 	return sm.ProcessBlockWithRecoveryCtx(sm.ctx, blockData, peers)
 }
 
-func (sm *SyncManager) ProcessBlockWithRecoveryCtx(ctx context.Context, blockData []byte, peers []PeerStatus) error {
+func (sm *SyncManager) ProcessBlockWithRecoveryCtx(ctx context.Context, blockData []byte, peers []PeerStatus) (bool, error) {
 	if sm.processBlock == nil {
-		return nil
+		return false, nil
 	}
 
 	err := sm.processBlock(blockData)
-	if err == nil || sm.isDuplicateErr(err) {
-		return nil
+	if err == nil {
+		return true, nil
+	}
+	if sm.isDuplicateErr(err) {
+		// Duplicate blocks are not rewarded (peer can otherwise farm reputation by
+		// serving already-known blocks), but they also aren't fatal to sync.
+		return false, nil
 	}
 	if !sm.isOrphanErr(err) {
-		return err
+		return false, err
 	}
 
 	// Recover by fetching and connecting the missing parent chain by hash.
 	if recErr := sm.recoverOrphanChain(ctx, blockData, peers); recErr != nil {
-		return recErr
+		return false, recErr
 	}
-	return nil
+	// Orphan recovery only returns nil after the pending chain (including blockData)
+	// has been connected/processed successfully.
+	return true, nil
 }
 
 func (sm *SyncManager) recoverOrphanChain(ctx context.Context, blockData []byte, peers []PeerStatus) error {
@@ -1062,12 +1123,6 @@ func (sm *SyncManager) fetchBlockByHashFromAnyPeer(
 		return nil, "", lastErr
 	}
 	return nil, "", fmt.Errorf("block %x not found on sync peers", hash[:8])
-}
-
-// syncFrom wraps single peer sync in the parallel sync mechanism
-func (sm *SyncManager) syncFrom(p peer.ID, peerStatus ChainStatus) {
-	peers := []PeerStatus{{Peer: p, Status: peerStatus}}
-	sm.parallelSyncFrom(peers, peerStatus.Height)
 }
 
 // FetchBlocks fetches full blocks from a peer
@@ -1287,16 +1342,68 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
 
 	// Process each transaction
+	attempted := 0
+	invalid := 0
 	for _, txData := range txs {
-		// Ignore errors - some txs might be duplicates or invalid.
 		if sm.processTx != nil {
+			attempted++
 			if err := sm.processTx(txData); err != nil {
+				// Some errors are due to our local resource limits (e.g. mempool full).
+				// Those should not penalize the peer.
+				if isBenignMempoolProcessErr(err) {
+					continue
+				}
+				invalid++
 				continue
 			}
 		}
 	}
 
+	if attempted > 0 && sm.node != nil {
+		if penalty, reason, ok := mempoolInvalidPenalty(attempted, invalid); ok {
+			sm.node.PenalizePeer(p, penalty, reason)
+		}
+	}
+
 	return nil
+}
+
+func isBenignMempoolProcessErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	s := err.Error()
+	// Local saturation errors should not count as "peer sent invalid tx".
+	if strings.Contains(s, "mempool full") || strings.Contains(s, "mempool size limit exceeded") {
+		return true
+	}
+	return false
+}
+
+// mempoolInvalidPenalty decides if a peer should be penalized based on the ratio of invalid txs
+// in a mempool sync response.
+func mempoolInvalidPenalty(total, invalid int) (penalty int, reason string, ok bool) {
+	if total <= 0 || invalid <= 0 {
+		return 0, "", false
+	}
+	// Avoid penalizing on small samples (random noise / transient races).
+	if total < 20 || invalid < 5 {
+		return 0, "", false
+	}
+
+	// Use integer arithmetic: invalid/total in basis points.
+	// ratioBp = invalid*10000/total
+	ratioBp := (invalid * 10000) / total
+
+	// Severe: mostly-invalid batch.
+	if ratioBp >= 8000 {
+		return ScorePenaltyMisbehave, fmt.Sprintf("mempool sync abusive: %d/%d invalid txs", invalid, total), true
+	}
+	// Moderate: clearly high invalid fraction.
+	if ratioBp >= 3000 {
+		return ScorePenaltyInvalid, fmt.Sprintf("mempool sync high invalid ratio: %d/%d invalid txs", invalid, total), true
+	}
+	return 0, "", false
 }
 
 func readSyncMessage(r network.Stream) (byte, []byte, error) {

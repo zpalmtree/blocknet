@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -28,7 +29,8 @@ type CLI struct {
 	cancel     context.CancelFunc
 	reader     *bufio.Reader
 	locked     bool
-	password   []byte
+	passwordHash    [32]byte
+	passwordHashSet bool
 	startTime  time.Time
 	daemonMode bool
 	noColor    bool
@@ -36,7 +38,7 @@ type CLI struct {
 	apiAddr    string
 	dataDir    string
 	walletFile string
-	mu         sync.RWMutex // protects wallet/scanner/password during hot-load
+	mu         sync.RWMutex // protects wallet/scanner/passwordHash during hot-load
 }
 
 // CLIConfig holds CLI configuration
@@ -216,7 +218,8 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		cancel()
 		return nil, fmt.Errorf("password error: %w", err)
 	}
-	cli.password = password
+	cli.passwordHash = passwordHash(password)
+	cli.passwordHashSet = true
 
 	walletCfg := defaultWalletConfig()
 
@@ -259,6 +262,10 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		cli.api.cli = cli
 		cli.apiAddr = cfg.APIAddr
 	}
+
+	// Best-effort: zero caller-owned password bytes. The wallet retains its own
+	// copy for re-encryption on save.
+	wipeBytes(password)
 
 	return cli, nil
 }
@@ -484,7 +491,7 @@ Commands:%s
   export-peer       Export peer address to peer.txt
   mining start|stop|threads Control mining
   sync              Force chain sync
-  seed              Show recovery seed (careful!)
+  seed              Show wallet recovery seed (careful!)
   viewkeys          Export view-only wallet keys
   lock              Lock wallet
   unlock            Unlock wallet
@@ -654,6 +661,7 @@ func (c *CLI) cmdSend(args []string) error {
 
 	// Submit to mempool via Dandelion++
 	if err := c.daemon.SubmitTransaction(result.TxData); err != nil {
+		c.wallet.ReleaseInputLease(result.InputLease)
 		return fmt.Errorf("failed to submit transaction: %w", err)
 	}
 
@@ -948,7 +956,10 @@ func (c *CLI) cmdSeed() error {
 		return nil
 	}
 
-	mnemonic := c.wallet.Mnemonic()
+	mnemonic, err := c.wallet.Mnemonic()
+	if err != nil {
+		return fmt.Errorf("failed to read mnemonic: %w", err)
+	}
 	if mnemonic == "" {
 		fmt.Println("\nNo recovery seed available (wallet may predate BIP39 support)")
 		return nil
@@ -1007,7 +1018,7 @@ func (c *CLI) cmdViewKeys() error {
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
 
 	fmt.Println("\nTo create a view-only wallet, run:")
-	fmt.Println("  blocknet --viewonly --spend-pub <spend_pub> --view-priv <view_priv>")
+	fmt.Println("  BLOCKNET_VIEW_PRIV=<view_priv_hex> blocknet --viewonly --spend-pub <spend_pub_hex>")
 	fmt.Println("\nOr copy these keys to a file and import with:")
 	fmt.Println("  blocknet --import-viewonly <keyfile>")
 
@@ -1031,7 +1042,13 @@ func (c *CLI) cmdUnlock() error {
 	}
 
 	// Verify password matches
-	if string(password) != string(c.password) {
+	if !c.passwordHashSet {
+		wipeBytes(password)
+		return fmt.Errorf("unlock unavailable: password state not initialized")
+	}
+	hash := passwordHash(password)
+	wipeBytes(password)
+	if subtle.ConstantTimeCompare(hash[:], c.passwordHash[:]) != 1 {
 		return fmt.Errorf("incorrect password")
 	}
 
@@ -1149,15 +1166,21 @@ func (c *CLI) promptNewPassword() ([]byte, error) {
 	}
 
 	if len(password) < 3 {
+		wipeBytes(password)
 		return nil, fmt.Errorf("password must be at least 3 characters")
 	}
 
 	confirm, err := c.promptPassword("Confirm password: ")
 	if err != nil {
+		wipeBytes(password)
 		return nil, err
 	}
 
-	if string(password) != string(confirm) {
+	ph := passwordHash(password)
+	ch := passwordHash(confirm)
+	wipeBytes(confirm)
+	if subtle.ConstantTimeCompare(ph[:], ch[:]) != 1 {
+		wipeBytes(password)
 		return nil, fmt.Errorf("passwords do not match")
 	}
 
@@ -1199,7 +1222,11 @@ func parseAmount(s string) (uint64, error) {
 		return 0, err
 	}
 
-	result := whole * 100_000_000
+	const atomicPerBNT uint64 = 100_000_000
+	if whole > (^uint64(0))/atomicPerBNT {
+		return 0, fmt.Errorf("amount too large")
+	}
+	result := whole * atomicPerBNT
 
 	// Parse fractional part if present
 	if len(parts) == 2 {
@@ -1213,6 +1240,9 @@ func parseAmount(s string) (uint64, error) {
 		frac, err := strconv.ParseUint(fracStr, 10, 64)
 		if err != nil {
 			return 0, err
+		}
+		if result > (^uint64(0))-frac {
+			return 0, fmt.Errorf("amount too large")
 		}
 		result += frac
 	}

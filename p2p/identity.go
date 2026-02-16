@@ -152,7 +152,7 @@ func saveIdentity(path string, key crypto.PrivKey) error {
 	}
 
 	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 

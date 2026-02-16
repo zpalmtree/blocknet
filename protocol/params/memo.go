@@ -17,6 +17,6 @@ const (
 	MemoPayloadMax = 124
 
 	// MemoBlockDomainSep is a public domain separator string for memo KDFs.
-	MemoBlockDomainSep = "blocknet_mainnet"
+	MemoBlockDomainSep = NetworkID
 )
 

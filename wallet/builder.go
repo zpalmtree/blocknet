@@ -1,12 +1,18 @@
 package wallet
 
 import (
+	"crypto/sha3"
 	"encoding/binary"
 	"errors"
 	"fmt"
-
-	"golang.org/x/crypto/sha3"
+	"math/bits"
+	"time"
 )
+
+func addU64(a, b uint64) (uint64, bool) {
+	sum, carry := bits.Add64(a, b, 0)
+	return sum, carry == 0
+}
 
 // Recipient represents a transaction recipient
 type Recipient struct {
@@ -22,6 +28,7 @@ type TransferResult struct {
 	TxID         [32]byte       // Transaction ID
 	TxPrivKey    [32]byte       // Transaction private key (for sender-side shared secret derivation)
 	SpentOutputs []*OwnedOutput // Outputs that were spent
+	InputLease   uint64         // Lease id holding reserved inputs (cleared on MarkSpent / TTL / ReleaseInputLease)
 	Fee          uint64         // Fee paid
 	Change       uint64         // Change returned
 }
@@ -79,7 +86,7 @@ func NewBuilder(w *Wallet, cfg TransferConfig) *Builder {
 }
 
 // Transfer creates a transaction sending to recipients
-func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight uint64) (*TransferResult, error) {
+func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight uint64) (res *TransferResult, retErr error) {
 	if len(recipients) == 0 {
 		return nil, errors.New("no recipients specified")
 	}
@@ -87,7 +94,11 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	// Calculate total amount needed
 	var totalSend uint64
 	for _, r := range recipients {
-		totalSend += r.Amount
+		var ok bool
+		totalSend, ok = addU64(totalSend, r.Amount)
+		if !ok {
+			return nil, errors.New("recipient amount sum overflows uint64")
+		}
 	}
 
 	// Estimate fee before building by using a conservative size model and iterating
@@ -95,18 +106,37 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	fee := b.config.MinFee
 	var inputs []*OwnedOutput
 	var err error
+	var lease uint64
+	defer func() {
+		if retErr != nil && lease != 0 {
+			b.wallet.ReleaseInputLease(lease)
+		}
+	}()
 	for i := 0; i < 4; i++ {
-		inputs, err = SelectInputs(b.wallet.MatureOutputs(currentHeight), totalSend+fee)
+		need, ok := addU64(totalSend, fee)
+		if !ok {
+			return nil, errors.New("send amount + fee overflows uint64")
+		}
+
+		if lease != 0 {
+			b.wallet.ReleaseInputLease(lease)
+			lease = 0
+		}
+
+		lease, inputs, err = b.wallet.ReserveMatureInputs(currentHeight, need, 2*time.Minute)
 		if err != nil {
 			return nil, fmt.Errorf("insufficient funds: %w", err)
 		}
 
 		var totalInput uint64
 		for _, inp := range inputs {
-			totalInput += inp.Amount
+			totalInput, ok = addU64(totalInput, inp.Amount)
+			if !ok {
+				return nil, errors.New("input amount sum overflows uint64")
+			}
 		}
-		if totalInput < totalSend+fee {
-			return nil, fmt.Errorf("insufficient funds after selection: have %d need %d", totalInput, totalSend+fee)
+		if totalInput < need {
+			return nil, fmt.Errorf("insufficient funds after selection: have %d need %d", totalInput, need)
 		}
 
 		change := totalInput - totalSend - fee
@@ -126,10 +156,18 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	// Calculate total input and final change under the final fee.
 	var totalInput uint64
 	for _, inp := range inputs {
-		totalInput += inp.Amount
+		var ok bool
+		totalInput, ok = addU64(totalInput, inp.Amount)
+		if !ok {
+			return nil, errors.New("input amount sum overflows uint64")
+		}
 	}
-	if totalInput < totalSend+fee {
-		return nil, fmt.Errorf("insufficient funds after fee adjustment: have %d need %d", totalInput, totalSend+fee)
+	need, ok := addU64(totalSend, fee)
+	if !ok {
+		return nil, errors.New("send amount + fee overflows uint64")
+	}
+	if totalInput < need {
+		return nil, fmt.Errorf("insufficient funds after fee adjustment: have %d need %d", totalInput, need)
 	}
 	change := totalInput - totalSend - fee
 
@@ -308,6 +346,7 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		TxID:         txID,
 		TxPrivKey:    txPrivKey,
 		SpentOutputs: inputs,
+		InputLease:   lease,
 		Fee:          fee,
 		Change:       change,
 	}, nil
@@ -388,13 +427,7 @@ func (b *Builder) distributeBlindings(target [32]byte, count int) ([][32]byte, e
 // encryptAmount encrypts an amount using the blinding factor as shared secret
 // Format: amount XOR first 8 bytes of Hash("amount" || blinding || output_index)
 func encryptAmount(amount uint64, blinding [32]byte, outputIndex int) [8]byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_amount"))
-	h.Write(blinding[:])
-	var outputIndexBytes [4]byte
-	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
-	h.Write(outputIndexBytes[:])
-	mask := h.Sum(nil)
+	mask := amountMask(blinding, outputIndex)
 
 	var amountBytes [8]byte
 	binary.LittleEndian.PutUint64(amountBytes[:], amount)
@@ -408,19 +441,26 @@ func encryptAmount(amount uint64, blinding [32]byte, outputIndex int) [8]byte {
 
 // DecryptAmount decrypts an encrypted amount using the blinding factor
 func DecryptAmount(encrypted [8]byte, blinding [32]byte, outputIndex int) uint64 {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_amount"))
-	h.Write(blinding[:])
-	var outputIndexBytes [4]byte
-	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
-	h.Write(outputIndexBytes[:])
-	mask := h.Sum(nil)
+	mask := amountMask(blinding, outputIndex)
 
 	var amountBytes [8]byte
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		amountBytes[i] = encrypted[i] ^ mask[i]
 	}
 	return binary.LittleEndian.Uint64(amountBytes[:])
+}
+
+func amountMask(blinding [32]byte, outputIndex int) [32]byte {
+	const tag = "blocknet_amount"
+	var outputIndexBytes [4]byte
+	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
+
+	// sha3.Sum256 never fails; build explicit input bytes to avoid unchecked Write() errors.
+	b := make([]byte, 0, len(tag)+32+4)
+	b = append(b, tag...)
+	b = append(b, blinding[:]...)
+	b = append(b, outputIndexBytes[:]...)
+	return sha3.Sum256(b)
 }
 
 // serializeTxPrefix creates the transaction prefix (everything except signatures)

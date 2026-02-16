@@ -33,9 +33,11 @@ type APIServer struct {
 	server  *http.Server
 
 	// Wallet lock state (mirrors CLI behavior)
-	locked   bool
-	password []byte
-	mu       sync.RWMutex
+	locked          bool
+	walletLoading   bool
+	passwordHash    [32]byte
+	passwordHashSet bool
+	mu              sync.RWMutex
 
 	// Back-reference to CLI for wallet hot-loading in daemon mode
 	cli *CLI
@@ -185,12 +187,11 @@ func (l *perIPLimiter) allow(ip string) bool {
 // NewAPIServer creates a new API server. wallet and scanner may be nil
 // for public-only mode (e.g. seed node running --explorer).
 func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dataDir string, password []byte) *APIServer {
-	return &APIServer{
+	s := &APIServer{
 		daemon:             daemon,
 		wallet:             w,
 		scanner:            scanner,
 		dataDir:            dataDir,
-		password:           password,
 		submitBlockLimiter: newPerIPLimiter(rate.Limit(2), 4, 10*time.Minute),
 		submitBlockSem:     make(chan struct{}, 2),
 		sendLimiter:        newPerIPLimiter(rate.Limit(0.5), 2, 10*time.Minute), // ~1 req / 2s, burst 2
@@ -198,6 +199,11 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 		sendIdem:           newIdempotencyCache(10*time.Minute, 1024),
 		unlockAttempts:     newUnlockAttemptTracker(),
 	}
+	if len(password) > 0 {
+		s.passwordHash = passwordHash(password)
+		s.passwordHashSet = true
+	}
+	return s
 }
 
 // isLocked returns whether the wallet is locked.

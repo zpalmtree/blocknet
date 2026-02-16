@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func TestHandleTxPenalizesMalformedPayload(t *testing.T) {
@@ -79,7 +77,7 @@ func TestHandleBlockPenalizesRateLimitExceeded(t *testing.T) {
 		chain:                 chain,
 		mempool:               NewMempool(DefaultMempoolConfig(), chain.IsKeyImageSpent, chain.IsCanonicalRingMember),
 		node:                  receiver,
-		gossipBlockLastAttempt: map[peer.ID]time.Time{},
+		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
 	}
 
 	genesis := chain.GetBlockByHeight(0)
@@ -105,7 +103,7 @@ func TestHandleBlockPenalizesRateLimitExceeded(t *testing.T) {
 	}
 
 	d.gossipBlockGateMu.Lock()
-	d.gossipBlockLastAttempt[sender.PeerID()] = time.Now()
+	d.gossipBlockLastAttempt.Set(sender.PeerID(), time.Now())
 	d.gossipBlockGateMu.Unlock()
 
 	d.handleBlock(sender.PeerID(), data)

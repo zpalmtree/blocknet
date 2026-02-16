@@ -2,8 +2,8 @@ package wallet
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"errors"
+	"math/big"
 	"sort"
 )
 
@@ -33,6 +33,11 @@ func SelectInputs(available []*OwnedOutput, targetAmount uint64) ([]*OwnedOutput
 		return nil, ErrInsufficientFunds
 	}
 
+	// Randomize iteration order to avoid deterministic/fingerprintable selection patterns
+	// from stable wallet storage ordering. This is best-effort; if crypto/rand fails,
+	// RandomShuffle no-ops and we fall back to deterministic behavior.
+	RandomShuffle(spendable)
+
 	// Try exact match first (best for privacy - no change output)
 	if exact := findExactMatch(spendable, targetAmount); exact != nil {
 		return exact, nil
@@ -48,23 +53,49 @@ func SelectInputs(available []*OwnedOutput, targetAmount uint64) ([]*OwnedOutput
 	return spendable, nil
 }
 
+func randIndex(n int) (int, bool) {
+	if n <= 0 {
+		return 0, false
+	}
+	jBig, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		return 0, false
+	}
+	return int(jBig.Int64()), true
+}
+
 // findExactMatch tries to find a combination that exactly matches target
 // Only checks single outputs and pairs for efficiency
 func findExactMatch(outputs []*OwnedOutput, target uint64) []*OwnedOutput {
-	// Check single outputs
+	// Check single outputs (random tie-break when multiple candidates exist)
+	var singles []*OwnedOutput
 	for _, out := range outputs {
 		if out.Amount == target {
-			return []*OwnedOutput{out}
+			singles = append(singles, out)
 		}
 	}
+	if len(singles) > 0 {
+		if j, ok := randIndex(len(singles)); ok {
+			return []*OwnedOutput{singles[j]}
+		}
+		return []*OwnedOutput{singles[0]}
+	}
 
-	// Check pairs
+	// Check pairs (random tie-break when multiple candidates exist)
+	var pairs [][2]*OwnedOutput
 	for i, a := range outputs {
-		for j, b := range outputs {
-			if i != j && a.Amount+b.Amount == target {
-				return []*OwnedOutput{a, b}
+		for j := i + 1; j < len(outputs); j++ {
+			b := outputs[j]
+			if a.Amount+b.Amount == target {
+				pairs = append(pairs, [2]*OwnedOutput{a, b})
 			}
 		}
+	}
+	if len(pairs) > 0 {
+		if j, ok := randIndex(len(pairs)); ok {
+			return []*OwnedOutput{pairs[j][0], pairs[j][1]}
+		}
+		return []*OwnedOutput{pairs[0][0], pairs[0][1]}
 	}
 
 	return nil
@@ -77,8 +108,32 @@ func selectSmallestFirst(outputs []*OwnedOutput, target uint64) []*OwnedOutput {
 	sorted := make([]*OwnedOutput, len(outputs))
 	copy(sorted, outputs)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Amount < sorted[j].Amount
+		if sorted[i].Amount != sorted[j].Amount {
+			return sorted[i].Amount < sorted[j].Amount
+		}
+		// Tie-breaker: keep stable ordering for now; we'll shuffle equal-amount runs below.
+		return false
 	})
+
+	// Shuffle equal-amount runs so multiple same-amount UTXOs don't pick deterministically.
+	for i := 0; i < len(sorted); {
+		j := i + 1
+		for j < len(sorted) && sorted[j].Amount == sorted[i].Amount {
+			j++
+		}
+		if j-i > 1 {
+			// Fisher-Yates within [i, j)
+			for k := j - 1; k > i; k-- {
+				off, ok := randIndex(k - i + 1)
+				if !ok {
+					break // fail safe: stop shuffling this run
+				}
+				swap := i + off
+				sorted[k], sorted[swap] = sorted[swap], sorted[k]
+			}
+		}
+		i = j
+	}
 
 	var selected []*OwnedOutput
 	var total uint64
@@ -131,15 +186,14 @@ func RandomShuffle(outputs []*OwnedOutput) {
 		return
 	}
 
-	// Fisher-Yates shuffle with crypto/rand
+	// Fisher-Yates shuffle with crypto/rand using unbiased bounded draws.
 	for i := n - 1; i > 0; i-- {
-		// Generate random index j where 0 <= j <= i
-		var buf [8]byte
-		if _, err := rand.Read(buf[:]); err != nil {
-			// If crypto/rand fails, don't shuffle (fail safe)
+		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			// If crypto/rand fails, don't shuffle (fail safe).
 			return
 		}
-		j := int(binary.LittleEndian.Uint64(buf[:]) % uint64(i+1))
+		j := int(jBig.Int64())
 		outputs[i], outputs[j] = outputs[j], outputs[i]
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -333,7 +334,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	addr := sanitizeInput(req.Address)
 	spendPub, viewPub, err := wallet.ParseAddress(addr)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid address: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid address")
 		return
 	}
 
@@ -382,13 +383,14 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	builder := s.createTxBuilder()
 	result, err := builder.Transfer([]wallet.Recipient{recipient}, 1000, height)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to build transaction: "+err.Error())
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
 	// Submit via Dandelion++
 	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to submit transaction: "+err.Error())
+		s.wallet.ReleaseInputLease(result.InputLease)
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
@@ -473,17 +475,13 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if wait, lockedUntil := s.unlockAttempts.precheck(ip); !lockedUntil.IsZero() {
 		retryAfter := int(time.Until(lockedUntil).Seconds())
-		if retryAfter < 1 {
-			retryAfter = 1
-		}
+		retryAfter = max(retryAfter, 1)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeError(w, http.StatusTooManyRequests, "too many unlock attempts; try again later")
 		return
 	} else if wait > 0 {
 		retryAfter := int(wait.Seconds())
-		if retryAfter < 1 {
-			retryAfter = 1
-		}
+		retryAfter = max(retryAfter, 1)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeError(w, http.StatusTooManyRequests, "unlock backoff active; retry later")
 		return
@@ -497,7 +495,19 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if subtle.ConstantTimeCompare([]byte(req.Password), s.password) != 1 {
+	s.mu.RLock()
+	hashSet := s.passwordHashSet
+	expectedHash := s.passwordHash
+	s.mu.RUnlock()
+	if !hashSet {
+		writeError(w, http.StatusServiceUnavailable, "unlock unavailable: password state not initialized")
+		return
+	}
+
+	pw := []byte(req.Password)
+	actualHash := passwordHash(pw)
+	wipeBytes(pw)
+	if subtle.ConstantTimeCompare(actualHash[:], expectedHash[:]) != 1 {
 		delay, lockedUntil := s.unlockAttempts.recordFailure(ip)
 		if delay > 0 {
 			select {
@@ -507,9 +517,7 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		}
 		if !lockedUntil.IsZero() {
 			retryAfter := int(time.Until(lockedUntil).Seconds())
-			if retryAfter < 1 {
-				retryAfter = 1
-			}
+			retryAfter = max(retryAfter, 1)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			writeError(w, http.StatusTooManyRequests, "too many unlock attempts; try again later")
 			return
@@ -531,10 +539,23 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 // Used in daemon mode where the app starts without a wallet.
 // POST /api/wallet/load
 func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
-	if s.wallet != nil {
+	s.mu.Lock()
+	if s.wallet != nil || s.walletLoading {
+		s.mu.Unlock()
 		writeError(w, http.StatusConflict, "wallet already loaded")
 		return
 	}
+	s.walletLoading = true
+	s.mu.Unlock()
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		s.mu.Lock()
+		s.walletLoading = false
+		s.mu.Unlock()
+	}()
 
 	var req struct {
 		Password string `json:"password"`
@@ -549,9 +570,11 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	password := []byte(req.Password)
+	passHash := passwordHash(password)
 	wl, err := wallet.LoadOrCreateWallet(s.cli.walletFile, password, defaultWalletConfig())
+	wipeBytes(password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load wallet: "+err.Error())
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
@@ -566,7 +589,7 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 	if walletHeight > chainHeight {
 		if removed := wl.RewindToHeight(chainHeight); removed > 0 {
 			if err := wl.Save(); err != nil {
-				writeError(w, http.StatusInternalServerError, "wallet rewind persistence failed: "+err.Error())
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 				return
 			}
 		}
@@ -583,21 +606,27 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		}
 		wl.SetSyncedHeight(chainHeight)
 		if err := wl.Save(); err != nil {
-			writeError(w, http.StatusInternalServerError, "wallet sync persistence failed: "+err.Error())
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 	}
 
 	// Publish to API server
+	s.mu.Lock()
 	s.wallet = wl
 	s.scanner = scanner
-	s.password = password
+	s.passwordHash = passHash
+	s.passwordHashSet = true
+	s.walletLoading = false
+	s.mu.Unlock()
+	committed = true
 
 	// Publish to CLI (for autoScanBlocks / shutdown)
 	s.cli.mu.Lock()
 	s.cli.wallet = wl
 	s.cli.scanner = scanner
-	s.cli.password = password
+	s.cli.passwordHash = passHash
+	s.cli.passwordHashSet = true
 	s.cli.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -609,10 +638,23 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 // handleImportWallet creates a new wallet from a BIP39 recovery seed.
 // POST /api/wallet/import
 func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
-	if s.wallet != nil {
+	s.mu.Lock()
+	if s.wallet != nil || s.walletLoading {
+		s.mu.Unlock()
 		writeError(w, http.StatusConflict, "wallet already loaded")
 		return
 	}
+	s.walletLoading = true
+	s.mu.Unlock()
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		s.mu.Lock()
+		s.walletLoading = false
+		s.mu.Unlock()
+	}()
 
 	var req struct {
 		Mnemonic string `json:"mnemonic"`
@@ -654,9 +696,11 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	password := []byte(req.Password)
+	passHash := passwordHash(password)
 	wl, err := wallet.NewWalletFromMnemonic(walletPath, password, req.Mnemonic, defaultWalletConfig())
+	wipeBytes(password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create wallet: "+err.Error())
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
@@ -677,21 +721,27 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 		}
 		wl.SetSyncedHeight(chainHeight)
 		if err := wl.Save(); err != nil {
-			writeError(w, http.StatusInternalServerError, "wallet import persistence failed: "+err.Error())
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 			return
 		}
 	}
 
 	// Publish to API server
+	s.mu.Lock()
 	s.wallet = wl
 	s.scanner = scanner
-	s.password = password
+	s.passwordHash = passHash
+	s.passwordHashSet = true
+	s.walletLoading = false
+	s.mu.Unlock()
+	committed = true
 
 	// Publish to CLI (for autoScanBlocks / shutdown)
 	s.cli.mu.Lock()
 	s.cli.wallet = wl
 	s.cli.scanner = scanner
-	s.cli.password = password
+	s.cli.passwordHash = passHash
+	s.cli.passwordHashSet = true
 	s.cli.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -708,6 +758,21 @@ func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ip := clientIP(r)
+	if wait, lockedUntil := s.unlockAttempts.precheck(ip); !lockedUntil.IsZero() {
+		retryAfter := int(time.Until(lockedUntil).Seconds())
+		retryAfter = max(retryAfter, 1)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
+		return
+	} else if wait > 0 {
+		retryAfter := int(wait.Seconds())
+		retryAfter = max(retryAfter, 1)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "attempt backoff active; retry later")
+		return
+	}
+
 	var req struct {
 		Password string `json:"password"`
 	}
@@ -716,12 +781,42 @@ func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if subtle.ConstantTimeCompare([]byte(req.Password), s.password) != 1 {
+	s.mu.RLock()
+	hashSet := s.passwordHashSet
+	expectedHash := s.passwordHash
+	s.mu.RUnlock()
+	if !hashSet {
+		writeError(w, http.StatusServiceUnavailable, "seed unavailable: password state not initialized")
+		return
+	}
+	pw := []byte(req.Password)
+	actualHash := passwordHash(pw)
+	wipeBytes(pw)
+	if subtle.ConstantTimeCompare(actualHash[:], expectedHash[:]) != 1 {
+		delay, lockedUntil := s.unlockAttempts.recordFailure(ip)
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+			}
+		}
+		if !lockedUntil.IsZero() {
+			retryAfter := int(time.Until(lockedUntil).Seconds())
+			retryAfter = max(retryAfter, 1)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "incorrect password")
 		return
 	}
+	s.unlockAttempts.recordSuccess(ip)
 
-	mnemonic := s.wallet.Mnemonic()
+	mnemonic, err := s.wallet.Mnemonic()
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
 	if mnemonic == "" {
 		writeError(w, http.StatusNotFound, "no recovery seed available")
 		return
@@ -813,7 +908,7 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	// Create coinbase paying to the loaded wallet
 	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward, height)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create coinbase: "+err.Error())
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
@@ -841,7 +936,7 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	// Compute merkle root
 	merkleRoot, err := block.ComputeMerkleRoot()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to compute merkle root: "+err.Error())
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 	block.Header.MerkleRoot = merkleRoot
@@ -880,7 +975,7 @@ func (s *APIServer) handleSubmitBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.daemon.SubmitBlock(&block); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeInternal(w, r, http.StatusBadRequest, "block rejected", err)
 		return
 	}
 
@@ -904,6 +999,12 @@ func (s *APIServer) handleMiningThreads(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Threads < 1 {
 		writeError(w, http.StatusBadRequest, "threads must be >= 1")
+		return
+	}
+	maxThreads := runtime.NumCPU()
+	maxThreads = max(maxThreads, 1)
+	if req.Threads > maxThreads {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("threads must be <= %d", maxThreads))
 		return
 	}
 
@@ -932,16 +1033,53 @@ func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "purge unavailable: no wallet loaded")
 		return
 	}
-	if len(s.password) == 0 {
+	s.mu.RLock()
+	hashSet := s.passwordHashSet
+	expectedHash := s.passwordHash
+	s.mu.RUnlock()
+	if !hashSet {
 		writeError(w, http.StatusServiceUnavailable, "purge unavailable: password state not initialized")
 		return
 	}
 
+	ip := clientIP(r)
+	if wait, lockedUntil := s.unlockAttempts.precheck(ip); !lockedUntil.IsZero() {
+		retryAfter := int(time.Until(lockedUntil).Seconds())
+		retryAfter = max(retryAfter, 1)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
+		return
+	} else if wait > 0 {
+		retryAfter := int(wait.Seconds())
+		retryAfter = max(retryAfter, 1)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "attempt backoff active; retry later")
+		return
+	}
+
 	// Require password verification
-	if subtle.ConstantTimeCompare([]byte(req.Password), s.password) != 1 {
+	pw := []byte(req.Password)
+	actualHash := passwordHash(pw)
+	wipeBytes(pw)
+	if subtle.ConstantTimeCompare(actualHash[:], expectedHash[:]) != 1 {
+		delay, lockedUntil := s.unlockAttempts.recordFailure(ip)
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+			}
+		}
+		if !lockedUntil.IsZero() {
+			retryAfter := int(time.Until(lockedUntil).Seconds())
+			retryAfter = max(retryAfter, 1)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "incorrect password")
 		return
 	}
+	s.unlockAttempts.recordSuccess(ip)
 
 	// Require explicit confirmation
 	if !req.Confirm {
@@ -951,13 +1089,13 @@ func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 
 	// Stop daemon first to release database locks
 	if err := s.daemon.Stop(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to stop daemon before purge: "+err.Error())
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
 	// Remove data directory
 	if err := os.RemoveAll(s.dataDir); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to purge blockchain data: %v", err))
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
@@ -989,6 +1127,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeInternal logs err server-side and returns a generic client-facing error.
+// The client message should not include internal details (paths/state/etc).
+func writeInternal(w http.ResponseWriter, r *http.Request, status int, clientMsg string, err error) {
+	path := ""
+	if r != nil && r.URL != nil {
+		path = r.URL.Path
+	}
+	method := ""
+	if r != nil {
+		method = r.Method
+	}
+	log.Printf("API internal error: %s %s: %v", method, path, err)
+	writeError(w, status, clientMsg)
 }
 
 // blockToJSON builds a JSON-friendly block representation.

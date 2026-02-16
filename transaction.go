@@ -2,17 +2,22 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha3"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math/bits"
 	"math/big"
 	"sync"
 
 	"blocknet/protocol/params"
 	"blocknet/wallet"
-
-	"golang.org/x/crypto/sha3"
 )
+
+func addU64(a, b uint64) (uint64, bool) {
+	sum, carry := bits.Add64(a, b, 0)
+	return sum, carry == 0
+}
 
 // TxOutput represents a transaction output (UTXO)
 type TxOutput struct {
@@ -683,12 +688,24 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 	// Verify amounts balance
 	var inputSum, outputSum uint64
 	for _, in := range b.inputs {
-		inputSum += in.ownedOutput.Amount
+		var ok bool
+		inputSum, ok = addU64(inputSum, in.ownedOutput.Amount)
+		if !ok {
+			return nil, fmt.Errorf("input amount sum overflows uint64")
+		}
 	}
 	for _, out := range b.outputs {
-		outputSum += out.amount
+		var ok bool
+		outputSum, ok = addU64(outputSum, out.amount)
+		if !ok {
+			return nil, fmt.Errorf("output amount sum overflows uint64")
+		}
 	}
-	if inputSum != outputSum+b.fee {
+	outputPlusFee, ok := addU64(outputSum, b.fee)
+	if !ok {
+		return nil, fmt.Errorf("output amount + fee overflows uint64")
+	}
+	if inputSum != outputPlusFee {
 		return nil, fmt.Errorf("amounts don't balance: inputs=%d, outputs=%d, fee=%d",
 			inputSum, outputSum, b.fee)
 	}
@@ -1107,20 +1124,17 @@ func validateCoinbase(tx *Transaction) error {
 }
 
 func deriveCoinbaseConsensusBlinding(txPublicKey [32]byte, blockHeight uint64, outputIndex int) [32]byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_coinbase_consensus_blinding"))
-	h.Write(txPublicKey[:])
 	var heightBuf [8]byte
 	binary.LittleEndian.PutUint64(heightBuf[:], blockHeight)
-	h.Write(heightBuf[:])
 	var indexBuf [4]byte
 	binary.LittleEndian.PutUint32(indexBuf[:], uint32(outputIndex))
-	h.Write(indexBuf[:])
-	sum := h.Sum(nil)
-
-	var blinding [32]byte
-	copy(blinding[:], sum)
-	return blinding
+	const tag = "blocknet_coinbase_consensus_blinding"
+	b := make([]byte, 0, len(tag)+len(txPublicKey)+len(heightBuf)+len(indexBuf))
+	b = append(b, tag...)
+	b = append(b, txPublicKey[:]...)
+	b = append(b, heightBuf[:]...)
+	b = append(b, indexBuf[:]...)
+	return sha3.Sum256(b)
 }
 
 // ============================================================================

@@ -90,15 +90,14 @@ quit                exit
 --wallet <path>     wallet file (default: wallet.dat)
 --data <path>       data directory (default: ./data)
 --listen <addr>     p2p listen address (default: /ip4/0.0.0.0/tcp/28080)
---seed              run as seed node (persistent identity)
+--seed              run as seed node (persistent P2P identity saved under data dir)
 --daemon            headless mode (no interactive shell)
 --recover           recover wallet from mnemonic
---viewonly          create view-only wallet (requires --spend-pub and --view-priv)
+--viewonly          create view-only wallet (requires --spend-pub and env var BLOCKNET_VIEW_PRIV)
 --spend-pub <hex>   spend public key for view-only wallet
---view-priv <hex>   view private key for view-only wallet
+--view-priv-env <name>  env var name containing view private key hex (default: BLOCKNET_VIEW_PRIV)
 --explorer <addr>   run block explorer (e.g. --explorer :8080)
 --nocolor           disable colored output
---test              run crypto and chain tests
 ```
 
 Custom peers can be passed as positional args:

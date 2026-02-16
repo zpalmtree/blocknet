@@ -77,10 +77,20 @@ func (e *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e.mux.ServeHTTP(w, r)
 }
 
+func (e *Explorer) httpServer(addr string) *http.Server {
+	handler := maxBodySize(e, maxRequestBodyBytes)
+	return &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+}
+
 // Start starts the explorer HTTP server
 func (e *Explorer) Start(addr string) error {
-	handler := maxBodySize(e, maxRequestBodyBytes)
-	return http.ListenAndServe(addr, handler)
+	return e.httpServer(addr).ListenAndServe()
 }
 
 // Supply info

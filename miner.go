@@ -149,7 +149,11 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction) (*Block, 
 	numThreads := m.Threads()
 
 	// Channel to receive winning result
-	resultChan := make(chan uint64, 1)
+	type mineResult struct {
+		nonce     uint64
+		timestamp int64
+	}
+	resultChan := make(chan mineResult, 1)
 	mineCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 
@@ -188,7 +192,7 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction) (*Block, 
 				// Check if we found a valid block
 				if PowCheckTarget(hash, target) {
 					select {
-					case resultChan <- nonce:
+					case resultChan <- mineResult{nonce: nonce, timestamp: lastTimestamp}:
 					default:
 					}
 					return
@@ -223,9 +227,10 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction) (*Block, 
 		// Chain tip changed -- abandon this stale solve
 		stopWorkers()
 		return nil, errNewBlock
-	case winningNonce := <-resultChan:
+	case win := <-resultChan:
 		stopWorkers()
-		block.Header.Nonce = winningNonce
+		block.Header.Nonce = win.nonce
+		block.Header.Timestamp = win.timestamp
 		atomic.AddUint64(&m.stats.BlocksFound, 1)
 		m.stats.LastHashTime = time.Now()
 		return block, nil
@@ -326,6 +331,11 @@ func (m *Miner) IsRunning() bool {
 func (m *Miner) SetThreads(n int) {
 	if n < 1 {
 		n = 1
+	}
+	maxThreads := runtime.NumCPU()
+	maxThreads = max(maxThreads, 1)
+	if n > maxThreads {
+		n = maxThreads
 	}
 	prev := int(m.threads.Swap(int32(n)))
 	if prev != n && m.IsRunning() {

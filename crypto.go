@@ -10,9 +10,8 @@ package main
 import "C"
 import (
 	"fmt"
+	"crypto/sha3"
 	"unsafe"
-
-	"golang.org/x/crypto/sha3"
 )
 
 // RustKeypair represents an ed25519 keypair from Rust
@@ -854,16 +853,17 @@ func DifficultyToTarget(difficulty uint64) [32]byte {
 // The amount can be decrypted by anyone who knows the shared secret
 func EncryptAmount(amount uint64, sharedSecret [32]byte, outputIndex int) [8]byte {
 	// Derive mask from shared secret
-	h := sha3.New256()
-	h.Write([]byte("blocknet_amount"))
-	h.Write(sharedSecret[:])
 	var indexBuf [4]byte
 	indexBuf[0] = byte(outputIndex)
 	indexBuf[1] = byte(outputIndex >> 8)
 	indexBuf[2] = byte(outputIndex >> 16)
 	indexBuf[3] = byte(outputIndex >> 24)
-	h.Write(indexBuf[:])
-	mask := h.Sum(nil)
+	const tag = "blocknet_amount"
+	b := make([]byte, 0, len(tag)+len(sharedSecret)+len(indexBuf))
+	b = append(b, tag...)
+	b = append(b, sharedSecret[:]...)
+	b = append(b, indexBuf[:]...)
+	mask := sha3.Sum256(b)
 
 	// XOR amount with mask
 	var amountBytes [8]byte

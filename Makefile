@@ -1,4 +1,4 @@
-.PHONY: all clean build-rust build-go test run install deploy release
+.PHONY: all clean clean-data build-rust build-go test run install deploy release
 
 VERSION := 0.3.1
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
@@ -42,7 +42,7 @@ test:
 	@echo "Testing Rust library..."
 	cd crypto-rs && cargo test
 	@echo "Testing Go code..."
-	./blocknet --test
+	go test ./...
 
 # Run the project
 run: build-go
@@ -61,12 +61,16 @@ clean:
 	@echo "Cleaning..."
 	cd crypto-rs && cargo clean
 	rm -f blocknet
-	rm -rf data/
 	rm -rf releases/
 	go clean
 
+# Clean chain data (local node state)
+clean-data:
+	@echo "Removing chain data..."
+	rm -rf data/
+
 # Clean everything including wallet
-clean-all: clean
+clean-all: clean clean-data
 	rm -f wallet.dat
 
 # Install dependencies

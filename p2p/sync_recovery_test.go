@@ -88,7 +88,7 @@ func TestProcessBlockWithRecoveryCtx_OrphanBackfillReconnectsChain(t *testing.T)
 	})
 
 	peers := []PeerStatus{{Peer: peer.ID("12D3KooWRecoveryPeer00001")}}
-	if err := sm.ProcessBlockWithRecoveryCtx(context.Background(), childData, peers); err != nil {
+	if accepted, err := sm.ProcessBlockWithRecoveryCtx(context.Background(), childData, peers); err != nil || !accepted {
 		t.Fatalf("expected orphan recovery to succeed, got: %v", err)
 	}
 	if !parentAccepted {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -15,6 +16,82 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
+
+func filterRoutableAddrs(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+	out := addrs[:0]
+	for _, a := range addrs {
+		if isRoutablePEXAddr(a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func isRoutablePEXAddr(a multiaddr.Multiaddr) bool {
+	// Strict: only accept direct IP addrs from peers (no /dns multiaddrs learned via PEX).
+	if a == nil {
+		return false
+	}
+
+	if ip4, err := a.ValueForProtocol(multiaddr.P_IP4); err == nil && ip4 != "" {
+		addr, err := netip.ParseAddr(ip4)
+		if err != nil {
+			return false
+		}
+		return isRoutableIP(addr)
+	}
+	if ip6, err := a.ValueForProtocol(multiaddr.P_IP6); err == nil && ip6 != "" {
+		addr, err := netip.ParseAddr(ip6)
+		if err != nil {
+			return false
+		}
+		return isRoutableIP(addr)
+	}
+	return false
+}
+
+func isRoutableIP(a netip.Addr) bool {
+	if !a.IsValid() {
+		return false
+	}
+	// Fast rejects.
+	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsMulticast() || a.IsUnspecified() {
+		return false
+	}
+	// Requires global unicast.
+	if !a.IsGlobalUnicast() {
+		return false
+	}
+
+	if a.Is4() {
+		b := a.As4()
+		// CGNAT 100.64.0.0/10
+		if b[0] == 100 && b[1] >= 64 && b[1] <= 127 {
+			return false
+		}
+		// Benchmark 198.18.0.0/15
+		if b[0] == 198 && (b[1] == 18 || b[1] == 19) {
+			return false
+		}
+		// Documentation ranges (RFC 5737).
+		if (b[0] == 192 && b[1] == 0 && b[2] == 2) || (b[0] == 198 && b[1] == 51 && b[2] == 100) || (b[0] == 203 && b[1] == 0 && b[2] == 113) {
+			return false
+		}
+		// Reserved / future use 240.0.0.0/4
+		if b[0] >= 240 {
+			return false
+		}
+	} else {
+		// IPv6 documentation range.
+		if a.Is6() {
+			if p, _ := netip.ParsePrefix("2001:db8::/32"); p.Contains(a) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
 
 // PEX message types
 const (
@@ -31,6 +108,8 @@ const (
 	MaxPeerRecordsPerResponse = MaxPeersPerExchange
 	// MaxPeerAddrsPerRecord bounds inbound multiaddrs accepted per peer record.
 	MaxPeerAddrsPerRecord = 16
+	// MaxKnownPeers bounds memory growth from peer churn.
+	MaxKnownPeers = 2048
 )
 
 // PeerRecord represents a known peer's address info
@@ -53,6 +132,16 @@ const (
 	BanDurationMedium      = 2 * time.Hour
 	BanDurationLong        = 24 * time.Hour
 	MaxBansBeforePermanent = 5 // After this many bans, permanent ban
+)
+
+const (
+	// MaxPermanentBans bounds memory growth from adversarial peer-id churn.
+	// If the cap is exceeded, we evict the oldest permanent bans (by BannedAt).
+	MaxPermanentBans = 4096
+
+	// PermanentBanRetention is a best-effort aging policy for "permanent" bans.
+	// It exists to ensure very old bans don't accumulate forever in long-lived processes.
+	PermanentBanRetention = 180 * 24 * time.Hour
 )
 
 // BanRecord tracks a banned peer
@@ -288,6 +377,7 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 			}
 			addrs = append(addrs, ma)
 		}
+		addrs = filterRoutableAddrs(addrs)
 
 		if len(addrs) > 0 {
 			pex.addKnownPeer(pid, addrs)
@@ -465,6 +555,11 @@ func (pex *PeerExchange) tryConnect(pid peer.ID, addrs []multiaddr.Multiaddr) {
 		return
 	}
 
+	addrs = filterRoutableAddrs(addrs)
+	if len(addrs) == 0 {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(pex.ctx, 30*time.Second)
 	defer cancel()
 
@@ -537,6 +632,7 @@ func (pex *PeerExchange) getPeerRecords(max int) []PeerRecord {
 		}
 
 		addrs := pex.node.host.Peerstore().Addrs(p)
+		addrs = filterRoutableAddrs(addrs)
 		if len(addrs) == 0 {
 			continue
 		}
@@ -583,6 +679,11 @@ func (pex *PeerExchange) addKnownPeer(pid peer.ID, addrs []multiaddr.Multiaddr) 
 	pex.mu.Lock()
 	defer pex.mu.Unlock()
 
+	addrs = filterRoutableAddrs(addrs)
+	if len(addrs) == 0 {
+		return
+	}
+
 	addrStrs := make([]string, len(addrs))
 	for i, a := range addrs {
 		addrStrs[i] = a.String()
@@ -602,6 +703,55 @@ func (pex *PeerExchange) addKnownPeer(pid peer.ID, addrs []multiaddr.Multiaddr) 
 
 	// Also add to peerstore for libp2p
 	pex.node.host.Peerstore().AddAddrs(pid, addrs, time.Hour)
+
+	pex.evictKnownPeersLocked(MaxKnownPeers)
+}
+
+func (pex *PeerExchange) evictKnownPeersLocked(max int) {
+	if max <= 0 {
+		max = 1
+	}
+	for len(pex.knownPeers) > max {
+		var victim peer.ID
+		var victimRec *PeerRecord
+		for pid, rec := range pex.knownPeers {
+			// Prefer evicting non-connected peers; keep currently connected ones.
+			if pex.node != nil && pex.node.host != nil && pex.node.host.Network().Connectedness(pid) == network.Connected {
+				continue
+			}
+			if victimRec == nil {
+				victim = pid
+				victimRec = rec
+				continue
+			}
+			// Deterministic eviction: lowest score, then oldest lastSeen, then lexicographic ID.
+			if rec.Score < victimRec.Score ||
+				(rec.Score == victimRec.Score && rec.LastSeen < victimRec.LastSeen) ||
+				(rec.Score == victimRec.Score && rec.LastSeen == victimRec.LastSeen && pid.String() < victim.String()) {
+				victim = pid
+				victimRec = rec
+			}
+		}
+		if victimRec == nil {
+			// All peers appear connected; fall back to evicting by deterministic rule anyway.
+			for pid, rec := range pex.knownPeers {
+				if victimRec == nil ||
+					rec.Score < victimRec.Score ||
+					(rec.Score == victimRec.Score && rec.LastSeen < victimRec.LastSeen) ||
+					(rec.Score == victimRec.Score && rec.LastSeen == victimRec.LastSeen && pid.String() < victim.String()) {
+					victim = pid
+					victimRec = rec
+				}
+			}
+		}
+		if victimRec == nil {
+			return
+		}
+		delete(pex.knownPeers, victim)
+		if pex.node != nil && pex.node.host != nil {
+			pex.node.host.Peerstore().ClearAddrs(victim)
+		}
+	}
 }
 
 // updatePeerScore adjusts a peer's score and may trigger a ban
@@ -681,6 +831,8 @@ func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time
 		Permanent: permanent,
 	}
 
+	pex.enforceBanRetentionLocked(now)
+
 	// Disconnect immediately
 	if pex.node != nil && pex.node.host != nil {
 		if err := pex.node.host.Network().ClosePeer(pid); err != nil {
@@ -690,6 +842,51 @@ func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time
 
 	// Remove from known peers
 	delete(pex.knownPeers, pid)
+}
+
+// enforceBanRetentionLocked bounds permanent ban retention.
+// Caller must hold pex.mu.
+func (pex *PeerExchange) enforceBanRetentionLocked(now time.Time) {
+	// Age out permanent bans first.
+	if PermanentBanRetention > 0 {
+		for pid, ban := range pex.bannedPeers {
+			if ban.Permanent && now.Sub(ban.BannedAt) > PermanentBanRetention {
+				delete(pex.bannedPeers, pid)
+			}
+		}
+	}
+
+	if MaxPermanentBans <= 0 {
+		return
+	}
+
+	// Cap permanent bans by evicting oldest.
+	permanentCount := 0
+	for _, ban := range pex.bannedPeers {
+		if ban.Permanent {
+			permanentCount++
+		}
+	}
+	for permanentCount > MaxPermanentBans {
+		var oldestPID peer.ID
+		var oldestAt time.Time
+		found := false
+		for pid, ban := range pex.bannedPeers {
+			if !ban.Permanent {
+				continue
+			}
+			if !found || ban.BannedAt.Before(oldestAt) {
+				oldestPID = pid
+				oldestAt = ban.BannedAt
+				found = true
+			}
+		}
+		if !found {
+			return
+		}
+		delete(pex.bannedPeers, oldestPID)
+		permanentCount--
+	}
 }
 
 // UnbanPeer removes a ban (for manual intervention)
@@ -802,6 +999,9 @@ func (pex *PeerExchange) cleanup() {
 			delete(pex.bannedPeers, pid)
 		}
 	}
+
+	pex.enforceBanRetentionLocked(now)
+	pex.evictKnownPeersLocked(MaxKnownPeers)
 }
 
 // KnownPeerCount returns the number of known peers

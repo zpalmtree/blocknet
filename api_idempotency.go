@@ -81,6 +81,7 @@ func (c *idempotencyCache) complete(now time.Time, key string, reqHash [32]byte,
 	e.createdAt = now
 	e.inFlight = false
 	e.result = idempotencyResult{status: status, body: append([]byte(nil), body...)}
+	c.enforceCapLocked()
 }
 
 func (c *idempotencyCache) abandon(key string) {
@@ -94,6 +95,10 @@ func (c *idempotencyCache) pruneLocked(now time.Time) {
 		return
 	}
 	for k, e := range c.entries {
+		// Never expire in-flight entries; dropping them re-allows duplicate processing.
+		if e.inFlight {
+			continue
+		}
 		if now.Sub(e.createdAt) > c.ttl {
 			delete(c.entries, k)
 		}
@@ -105,12 +110,16 @@ func (c *idempotencyCache) enforceCapLocked() {
 		return
 	}
 
-	// Evict oldest entries. This is small and only touched on send requests.
+	// Evict oldest completed entries first.
+	// Never evict in-flight entries; callers use those to prevent duplicate processing.
 	for len(c.entries) > c.maxEntries {
 		var oldestKey string
 		var oldestTime time.Time
 		first := true
 		for k, e := range c.entries {
+			if e.inFlight {
+				continue
+			}
 			if first || e.createdAt.Before(oldestTime) {
 				oldestKey = k
 				oldestTime = e.createdAt
@@ -118,7 +127,8 @@ func (c *idempotencyCache) enforceCapLocked() {
 			}
 		}
 		if oldestKey == "" {
-			break
+			// All remaining entries are in-flight; keep them even if we're over cap.
+			return
 		}
 		delete(c.entries, oldestKey)
 	}

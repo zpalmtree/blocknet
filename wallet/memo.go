@@ -2,11 +2,11 @@ package wallet
 
 import (
 	"crypto/rand"
+	"crypto/sha3"
 	"encoding/binary"
 	"fmt"
 
 	"blocknet/protocol/params"
-	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -26,7 +26,7 @@ func EncryptMemo(memo []byte, sharedSecret [32]byte, outputIndex int) ([MemoSize
 	}
 	mask := deriveMemoMask(sharedSecret, outputIndex)
 	var encrypted [MemoSize]byte
-	for i := 0; i < MemoSize; i++ {
+	for i := range MemoSize {
 		encrypted[i] = envelope[i] ^ mask[i]
 	}
 	return encrypted, nil
@@ -37,7 +37,7 @@ func EncryptMemo(memo []byte, sharedSecret [32]byte, outputIndex int) ([MemoSize
 func DecryptMemo(encrypted [MemoSize]byte, sharedSecret [32]byte, outputIndex int) ([]byte, bool) {
 	mask := deriveMemoMask(sharedSecret, outputIndex)
 	var plain [MemoSize]byte
-	for i := 0; i < MemoSize; i++ {
+	for i := range MemoSize {
 		plain[i] = encrypted[i] ^ mask[i]
 	}
 	if plain[0] != memoEnvelopeVersion {
@@ -90,36 +90,37 @@ func buildMemoEnvelope(memo []byte) ([MemoSize]byte, error) {
 }
 
 func memoChecksum(payload []byte) [32]byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_memo_checksum"))
 	var payloadLen [2]byte
 	binary.LittleEndian.PutUint16(payloadLen[:], uint16(len(payload)))
-	h.Write(payloadLen[:])
-	h.Write(payload)
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
+	const tag = "blocknet_memo_checksum"
+	b := make([]byte, 0, len(tag)+len(payloadLen)+len(payload))
+	b = append(b, tag...)
+	b = append(b, payloadLen[:]...)
+	b = append(b, payload...)
+	return sha3.Sum256(b)
 }
 
 func deriveMemoMask(sharedSecret [32]byte, outputIndex int) [MemoSize]byte {
-	h := sha3.New256()
-	h.Write(sharedSecret[:])
-	h.Write([]byte("memo"))
 	var outputIndexBytes [4]byte
 	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
-	h.Write(outputIndexBytes[:])
-	h.Write([]byte(params.MemoBlockDomainSep))
-	seed := h.Sum(nil)
+	const tag = "memo"
+	b := make([]byte, 0, 32+len(tag)+len(outputIndexBytes)+len(params.MemoBlockDomainSep))
+	b = append(b, sharedSecret[:]...)
+	b = append(b, tag...)
+	b = append(b, outputIndexBytes[:]...)
+	b = append(b, params.MemoBlockDomainSep...)
+	seedSum := sha3.Sum256(b)
+	seed := seedSum[:]
 
 	var mask [MemoSize]byte
-	for i := 0; i < 4; i++ {
-		hi := sha3.New256()
-		hi.Write(seed)
+	for i := range 4 {
 		var blockIndex [4]byte
 		binary.LittleEndian.PutUint32(blockIndex[:], uint32(i))
-		hi.Write(blockIndex[:])
-		block := hi.Sum(nil)
-		copy(mask[i*32:(i+1)*32], block)
+		bi := make([]byte, 0, len(seed)+len(blockIndex))
+		bi = append(bi, seed...)
+		bi = append(bi, blockIndex[:]...)
+		block := sha3.Sum256(bi)
+		copy(mask[i*32:(i+1)*32], block[:])
 	}
 	return mask
 }

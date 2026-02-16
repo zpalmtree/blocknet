@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,14 +57,92 @@ type Daemon struct {
 	// Guards expensive gossip block validation to bound CPU/RAM pressure.
 	gossipBlockGateMu      sync.Mutex
 	gossipBlockInFlight    int
-	gossipBlockLastAttempt map[peer.ID]time.Time
+	gossipBlockLastAttempt *gossipAttemptLRU
 }
 
 const (
 	// Keep expensive gossip validation bounded under announcement floods.
 	maxConcurrentGossipBlockValidations = 1
 	minGossipBlockValidationInterval    = 3 * time.Second
+
+	// Bound per-peer rate limit memory under peer-id churn.
+	// LRU eviction keeps active peers hot while bounding growth.
+	maxGossipBlockAttemptEntries = 4096
+	gossipBlockAttemptTTL        = 30 * time.Minute
 )
+
+type gossipAttemptEntry struct {
+	pid  peer.ID
+	last time.Time
+}
+
+type gossipAttemptLRU struct {
+	cap   int
+	lru   *list.List // front=MRU, back=LRU; values are gossipAttemptEntry
+	index map[peer.ID]*list.Element
+}
+
+func newGossipAttemptLRU(cap int) *gossipAttemptLRU {
+	if cap < 1 {
+		cap = 1
+	}
+	return &gossipAttemptLRU{
+		cap:   cap,
+		lru:   list.New(),
+		index: make(map[peer.ID]*list.Element, min(cap, 1024)),
+	}
+}
+
+func (c *gossipAttemptLRU) PurgeBefore(cutoff time.Time) {
+	if c == nil {
+		return
+	}
+	for {
+		back := c.lru.Back()
+		if back == nil {
+			return
+		}
+		ent := back.Value.(gossipAttemptEntry)
+		if ent.last.After(cutoff) {
+			return
+		}
+		c.lru.Remove(back)
+		delete(c.index, ent.pid)
+	}
+}
+
+func (c *gossipAttemptLRU) Get(pid peer.ID) (time.Time, bool) {
+	if c == nil {
+		return time.Time{}, false
+	}
+	if elem, ok := c.index[pid]; ok {
+		c.lru.MoveToFront(elem)
+		ent := elem.Value.(gossipAttemptEntry)
+		return ent.last, true
+	}
+	return time.Time{}, false
+}
+
+func (c *gossipAttemptLRU) Set(pid peer.ID, t time.Time) {
+	if c == nil {
+		return
+	}
+	if elem, ok := c.index[pid]; ok {
+		elem.Value = gossipAttemptEntry{pid: pid, last: t}
+		c.lru.MoveToFront(elem)
+	} else {
+		c.index[pid] = c.lru.PushFront(gossipAttemptEntry{pid: pid, last: t})
+	}
+	for c.lru.Len() > c.cap {
+		back := c.lru.Back()
+		if back == nil {
+			break
+		}
+		ent := back.Value.(gossipAttemptEntry)
+		c.lru.Remove(back)
+		delete(c.index, ent.pid)
+	}
+}
 
 // DaemonConfig configures the daemon
 type DaemonConfig struct {
@@ -199,7 +278,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		stealthKeys: stealthKeys,
 		ctx:         ctx,
 		cancel:      cancel,
-		gossipBlockLastAttempt: make(map[peer.ID]time.Time),
+		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
 	}
 
 	// Create sync manager with callbacks
@@ -548,15 +627,21 @@ func (d *Daemon) acquireGossipBlockValidationSlot(pid peer.ID) error {
 	d.gossipBlockGateMu.Lock()
 	defer d.gossipBlockGateMu.Unlock()
 
+	if d.gossipBlockLastAttempt == nil {
+		d.gossipBlockLastAttempt = newGossipAttemptLRU(maxGossipBlockAttemptEntries)
+	}
+
 	now := time.Now()
-	if last, ok := d.gossipBlockLastAttempt[pid]; ok && now.Sub(last) < minGossipBlockValidationInterval {
+	d.gossipBlockLastAttempt.PurgeBefore(now.Add(-gossipBlockAttemptTTL))
+
+	if last, ok := d.gossipBlockLastAttempt.Get(pid); ok && now.Sub(last) < minGossipBlockValidationInterval {
 		return fmt.Errorf("block gossip rate limit exceeded")
 	}
 	if d.gossipBlockInFlight >= maxConcurrentGossipBlockValidations {
 		return fmt.Errorf("block gossip validation busy")
 	}
 
-	d.gossipBlockLastAttempt[pid] = now
+	d.gossipBlockLastAttempt.Set(pid, now)
 	d.gossipBlockInFlight++
 	return nil
 }

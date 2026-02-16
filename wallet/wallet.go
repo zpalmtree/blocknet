@@ -4,6 +4,8 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha3"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +14,28 @@ import (
 	"sync/atomic"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/btcsuite/btcutil/base58"
 	"golang.org/x/crypto/argon2"
 )
+
+// wipeBytes best-effort zeroes a byte slice.
+// This is not a guarantee in Go (copies may exist), but it reduces exposure windows.
+func wipeBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+func cloneBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
 
 // StealthKeys contains the two keypairs needed for stealth addresses
 type StealthKeys struct {
@@ -26,10 +47,15 @@ type StealthKeys struct {
 
 // Address returns the public stealth address (base58 encoded spend+view pubkeys)
 func (sk *StealthKeys) Address() string {
-	// Address = base58(spend_pub || view_pub)
-	combined := make([]byte, 64)
-	copy(combined[:32], sk.SpendPubKey[:])
-	copy(combined[32:], sk.ViewPubKey[:])
+	// Address = base58(spend_pub || view_pub || checksum4)
+	payload := make([]byte, 64)
+	copy(payload[:32], sk.SpendPubKey[:])
+	copy(payload[32:], sk.ViewPubKey[:])
+
+	sum := addressChecksum(payload)
+	combined := make([]byte, 0, 68)
+	combined = append(combined, payload...)
+	combined = append(combined, sum[:4]...)
 	return base58.Encode(combined)
 }
 
@@ -43,21 +69,21 @@ type OwnedOutput struct {
 	OneTimePubKey  [32]byte `json:"one_time_pub"`
 	Commitment     [32]byte `json:"commitment"`
 	BlockHeight    uint64   `json:"block_height"`
-	IsCoinbase     bool     `json:"is_coinbase"`               // True if from mining reward
+	IsCoinbase     bool     `json:"is_coinbase"` // True if from mining reward
 	Spent          bool     `json:"spent"`
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
-	Memo           []byte   `json:"memo,omitempty"`            // Decrypted memo payload
+	Memo           []byte   `json:"memo,omitempty"` // Decrypted memo payload
 }
 
 // SendRecord tracks outgoing transaction details
 type SendRecord struct {
 	TxID        [32]byte `json:"txid"`
 	Timestamp   int64    `json:"timestamp"`
-	Recipient   string   `json:"recipient"`              // base58 address
-	Amount      uint64   `json:"amount"`                 // actual amount sent (not including fee)
+	Recipient   string   `json:"recipient"` // base58 address
+	Amount      uint64   `json:"amount"`    // actual amount sent (not including fee)
 	Fee         uint64   `json:"fee"`
-	BlockHeight uint64   `json:"block_height"`           // when confirmed
-	Memo        []byte   `json:"memo,omitempty"`         // Memo used (plaintext)
+	BlockHeight uint64   `json:"block_height"`   // when confirmed
+	Memo        []byte   `json:"memo,omitempty"` // Memo used (plaintext)
 }
 
 // WalletData is the serializable wallet state
@@ -87,6 +113,12 @@ type Wallet struct {
 	filename string
 	password []byte // kept in memory for re-encryption on save
 
+	// inputReservations tracks outputs reserved for pending spends.
+	// Reservation is best-effort: it prevents concurrent builders from selecting the
+	// same inputs, and expires automatically after a TTL.
+	inputReservations map[reservedOutpoint]inputReservation
+	nextLease         atomic.Uint64
+
 	// Diagnostics counters (not persisted).
 	memoDecryptFailures   atomic.Uint64
 	memoDecryptLastHeight atomic.Uint64
@@ -98,6 +130,16 @@ type Wallet struct {
 	deriveSpendKey          func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
 	deriveOutputSecret      func(txPub, viewPriv [32]byte) ([32]byte, error)
 	generateKeypairFromSeed func(seed [32]byte) (priv, pub [32]byte, err error)
+}
+
+type reservedOutpoint struct {
+	TxID        [32]byte
+	OutputIndex int
+}
+
+type inputReservation struct {
+	lease     uint64
+	expiresAt time.Time
 }
 
 // WalletConfig holds wallet configuration
@@ -139,7 +181,8 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 
 	w := &Wallet{
 		filename:                filename,
-		password:                password,
+		password:                cloneBytes(password),
+		inputReservations:       make(map[reservedOutpoint]inputReservation),
 		generateStealthKeys:     cfg.GenerateStealthKeys,
 		deriveStealthAddress:    cfg.DeriveStealthAddress,
 		checkStealthOutput:      cfg.CheckStealthOutput,
@@ -162,6 +205,10 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 		return nil, fmt.Errorf("failed to save new wallet: %w", err)
 	}
 
+	// Don't keep mnemonic resident in the long-lived wallet struct.
+	// `Save()` preserves the on-disk mnemonic even when in-memory field is empty.
+	w.data.Mnemonic = ""
+
 	return w, nil
 }
 
@@ -177,16 +224,21 @@ func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt wallet (wrong password?): %w", err)
 	}
+	defer wipeBytes(plaintext)
 
 	var data WalletData
 	if err := json.Unmarshal(plaintext, &data); err != nil {
 		return nil, fmt.Errorf("failed to parse wallet data: %w", err)
 	}
 
+	// Avoid long-lived in-memory mnemonic retention; fetch on demand from disk.
+	data.Mnemonic = ""
+
 	return &Wallet{
 		data:                    data,
 		filename:                filename,
-		password:                password,
+		password:                cloneBytes(password),
+		inputReservations:       make(map[reservedOutpoint]inputReservation),
 		generateStealthKeys:     cfg.GenerateStealthKeys,
 		deriveStealthAddress:    cfg.DeriveStealthAddress,
 		generateKeypairFromSeed: cfg.GenerateKeypairFromSeed,
@@ -201,7 +253,8 @@ func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, er
 func NewViewOnlyWallet(filename string, password []byte, keys ViewOnlyKeys, cfg WalletConfig) (*Wallet, error) {
 	w := &Wallet{
 		filename:             filename,
-		password:             password,
+		password:             cloneBytes(password),
+		inputReservations:    make(map[reservedOutpoint]inputReservation),
 		deriveStealthAddress: cfg.DeriveStealthAddress,
 		checkStealthOutput:   cfg.CheckStealthOutput,
 		deriveOutputSecret:   cfg.DeriveOutputSecret,
@@ -243,10 +296,20 @@ func (w *Wallet) Save() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	plaintext, err := json.MarshalIndent(w.data, "", "  ")
+	dataToPersist := w.data
+	// Mnemonic is intentionally not kept in the long-lived wallet struct; preserve
+	// any on-disk mnemonic so future saves don't erase it.
+	if !dataToPersist.ViewOnly && dataToPersist.Mnemonic == "" {
+		if mnemonic, err := w.readMnemonicFromDisk(); err == nil && mnemonic != "" {
+			dataToPersist.Mnemonic = mnemonic
+		}
+	}
+
+	plaintext, err := json.MarshalIndent(dataToPersist, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal wallet: %w", err)
 	}
+	defer wipeBytes(plaintext)
 
 	encrypted, err := encrypt(plaintext, w.password)
 	if err != nil {
@@ -268,10 +331,14 @@ func (w *Wallet) Address() string {
 }
 
 // Mnemonic returns the BIP39 recovery phrase
-func (w *Wallet) Mnemonic() string {
+func (w *Wallet) Mnemonic() (string, error) {
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.data.Mnemonic
+	viewOnly := w.data.ViewOnly
+	w.mu.RUnlock()
+	if viewOnly {
+		return "", nil
+	}
+	return w.readMnemonicFromDisk()
 }
 
 // IsViewOnly returns true if this is a view-only wallet
@@ -383,8 +450,20 @@ func (w *Wallet) AllOutputs() []*OwnedOutput {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	outputs := make([]*OwnedOutput, len(w.data.Outputs))
-	copy(outputs, w.data.Outputs)
+	// Return snapshots, not internal pointers.
+	outputs := make([]*OwnedOutput, 0, len(w.data.Outputs))
+	for _, out := range w.data.Outputs {
+		if out == nil {
+			continue
+		}
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		outputs = append(outputs, &c)
+	}
 	return outputs
 }
 
@@ -395,8 +474,14 @@ func (w *Wallet) SpendableOutputs() []*OwnedOutput {
 
 	var outputs []*OwnedOutput
 	for _, out := range w.data.Outputs {
-		if !out.Spent {
-			outputs = append(outputs, out)
+		if out != nil && !out.Spent {
+			c := *out
+			if len(out.Memo) > 0 {
+				c.Memo = append([]byte(nil), out.Memo...)
+			} else {
+				c.Memo = nil
+			}
+			outputs = append(outputs, &c)
 		}
 	}
 	return outputs
@@ -409,8 +494,14 @@ func (w *Wallet) MatureOutputs(currentHeight uint64) []*OwnedOutput {
 
 	var outputs []*OwnedOutput
 	for _, out := range w.data.Outputs {
-		if IsOutputMature(out, currentHeight) {
-			outputs = append(outputs, out)
+		if out != nil && IsOutputMature(out, currentHeight) {
+			c := *out
+			if len(out.Memo) > 0 {
+				c.Memo = append([]byte(nil), out.Memo...)
+			} else {
+				c.Memo = nil
+			}
+			outputs = append(outputs, &c)
 		}
 	}
 	return outputs
@@ -441,10 +532,106 @@ func (w *Wallet) MarkSpent(oneTimePubKey [32]byte, height uint64) bool {
 		if out.OneTimePubKey == oneTimePubKey && !out.Spent {
 			out.Spent = true
 			out.SpentHeight = height
+			// Clear any pending reservation for this outpoint.
+			if w.inputReservations != nil {
+				delete(w.inputReservations, reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex})
+			}
 			return true
 		}
 	}
 	return false
+}
+
+// ReserveMatureInputs selects spendable mature outputs and reserves them under a lease.
+// Callers should release the lease if the spend attempt is abandoned; otherwise the
+// reservation expires after ttl.
+func (w *Wallet) ReserveMatureInputs(currentHeight uint64, targetAmount uint64, ttl time.Duration) (lease uint64, inputs []*OwnedOutput, err error) {
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+
+	now := time.Now()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.inputReservations == nil {
+		w.inputReservations = make(map[reservedOutpoint]inputReservation)
+	}
+
+	// Drop expired reservations.
+	for op, res := range w.inputReservations {
+		if now.After(res.expiresAt) {
+			delete(w.inputReservations, op)
+		}
+	}
+
+	// Build candidate set from internal state while holding the lock.
+	candidates := make([]*OwnedOutput, 0, len(w.data.Outputs))
+	for _, out := range w.data.Outputs {
+		if out == nil || out.Spent {
+			continue
+		}
+		if !IsOutputMature(out, currentHeight) {
+			continue
+		}
+		op := reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex}
+		if _, reserved := w.inputReservations[op]; reserved {
+			continue
+		}
+		candidates = append(candidates, out)
+	}
+
+	selected, selErr := SelectInputs(candidates, targetAmount)
+	if selErr != nil {
+		return 0, nil, selErr
+	}
+
+	lease = w.nextLease.Add(1)
+	expires := now.Add(ttl)
+
+	// Reserve selected outputs (fail closed if any outpoint is already reserved).
+	for _, out := range selected {
+		op := reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex}
+		if existing, reserved := w.inputReservations[op]; reserved && now.Before(existing.expiresAt) {
+			// Roll back partial reservations for this lease.
+			for rop, res := range w.inputReservations {
+				if res.lease == lease {
+					delete(w.inputReservations, rop)
+				}
+			}
+			return 0, nil, errors.New("selected output already reserved")
+		}
+		w.inputReservations[op] = inputReservation{lease: lease, expiresAt: expires}
+	}
+
+	// Return snapshots, not internal pointers.
+	inputs = make([]*OwnedOutput, 0, len(selected))
+	for _, out := range selected {
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		inputs = append(inputs, &c)
+	}
+
+	return lease, inputs, nil
+}
+
+// ReleaseInputLease releases all reservations held by a given lease id.
+func (w *Wallet) ReleaseInputLease(lease uint64) {
+	if lease == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for op, res := range w.inputReservations {
+		if res.lease == lease {
+			delete(w.inputReservations, op)
+		}
+	}
 }
 
 // SyncedHeight returns the last synced block height
@@ -526,19 +713,69 @@ func (w *Wallet) GetSendRecord(txID [32]byte) *SendRecord {
 // Encryption helpers (Argon2id + AES-GCM)
 // ============================================================================
 
-func deriveKey(password, salt []byte) []byte {
-	// Argon2id: 64MB memory, 3 iterations, 4 parallelism
-	return argon2.IDKey(password, salt, 3, 64*1024, 4, 32)
+type kdfParams struct {
+	// Version is a monotonically increasing KDF "profile" version.
+	// It is stored in the encrypted file header to support migration-aware decrypt.
+	Version uint8
+
+	Time    uint32 // iterations
+	Memory  uint32 // KiB
+	Threads uint8
+}
+
+const (
+	walletEncMagicV1 = "BLKNTWLT" // 8 bytes
+
+	walletEncFormatVersionV1 uint8 = 1
+
+	walletEncSaltLen = 16
+	walletEncKeyLen  = 32
+
+	// Header = magic(8) + formatVer(1) + kdfVer(1) + time(4) + memKiB(4) + threads(1) + reserved(3)
+	walletEncHeaderLenV1 = 8 + 1 + 1 + 4 + 4 + 1 + 3
+)
+
+var (
+	// legacyKDFParams match the original hard-coded settings, used to decrypt old wallets.
+	legacyKDFParams = kdfParams{
+		Version: 0,
+		Time:    3,
+		Memory:  64 * 1024, // 64 MiB
+		Threads: 4,
+	}
+
+	// defaultKDFParams are used for new encryptions (new wallets + on-save migrations).
+	// Tuned upward for high-value wallet context.
+	defaultKDFParams = kdfParams{
+		Version: 1,
+		Time:    3,
+		Memory:  256 * 1024, // 256 MiB
+		Threads: 4,
+	}
+)
+
+func deriveKeyWithParams(password, salt []byte, p kdfParams) []byte {
+	if p.Time == 0 {
+		p.Time = legacyKDFParams.Time
+	}
+	if p.Memory == 0 {
+		p.Memory = legacyKDFParams.Memory
+	}
+	if p.Threads == 0 {
+		p.Threads = legacyKDFParams.Threads
+	}
+	return argon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, walletEncKeyLen)
 }
 
 func encrypt(plaintext, password []byte) ([]byte, error) {
 	// Generate random salt
-	salt := make([]byte, 16)
+	salt := make([]byte, walletEncSaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
 
-	key := deriveKey(password, salt)
+	key := deriveKeyWithParams(password, salt, defaultKDFParams)
+	defer wipeBytes(key)
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -557,41 +794,108 @@ func encrypt(plaintext, password []byte) ([]byte, error) {
 
 	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
 
-	// Format: salt (16) || nonce (12) || ciphertext
-	result := make([]byte, 16+gcm.NonceSize()+len(ciphertext))
-	copy(result[:16], salt)
-	copy(result[16:16+gcm.NonceSize()], nonce)
-	copy(result[16+gcm.NonceSize():], ciphertext)
+	// Versioned format:
+	// magic(8) || formatVer(1) || kdfVer(1) || time(4) || memKiB(4) || threads(1) || reserved(3) ||
+	// salt(16) || nonce || ciphertext
+	result := make([]byte, walletEncHeaderLenV1+walletEncSaltLen+gcm.NonceSize()+len(ciphertext))
+	off := 0
+	copy(result[off:off+8], []byte(walletEncMagicV1))
+	off += 8
+	result[off] = walletEncFormatVersionV1
+	off++
+	result[off] = defaultKDFParams.Version
+	off++
+	binary.BigEndian.PutUint32(result[off:off+4], defaultKDFParams.Time)
+	off += 4
+	binary.BigEndian.PutUint32(result[off:off+4], defaultKDFParams.Memory)
+	off += 4
+	result[off] = defaultKDFParams.Threads
+	off++
+	// reserved (3 bytes)
+	off += 3
+	copy(result[off:off+walletEncSaltLen], salt)
+	off += walletEncSaltLen
+	copy(result[off:off+gcm.NonceSize()], nonce)
+	off += gcm.NonceSize()
+	copy(result[off:], ciphertext)
 
 	return result, nil
 }
 
 func decrypt(data, password []byte) ([]byte, error) {
-	if len(data) < 16+12 { // salt + minimum nonce
-		return nil, errors.New("ciphertext too short")
+	// New format starts with magic header; legacy format starts with salt.
+	if len(data) >= walletEncHeaderLenV1+walletEncSaltLen {
+		if string(data[:8]) == walletEncMagicV1 {
+			formatVer := data[8]
+			if formatVer != walletEncFormatVersionV1 {
+				return nil, fmt.Errorf("unsupported wallet encryption format version: %d", formatVer)
+			}
+
+			kdfVer := data[9]
+			_ = kdfVer // currently informational; we parse explicit params below.
+
+			timeParam := binary.BigEndian.Uint32(data[10:14])
+			memKiB := binary.BigEndian.Uint32(data[14:18])
+			threads := data[18]
+
+			off := walletEncHeaderLenV1
+			if len(data) < off+walletEncSaltLen+12 {
+				return nil, errors.New("ciphertext too short")
+			}
+			salt := data[off : off+walletEncSaltLen]
+			off += walletEncSaltLen
+
+			params := kdfParams{
+				Version: kdfVer,
+				Time:    timeParam,
+				Memory:  memKiB,
+				Threads: threads,
+			}
+			key := deriveKeyWithParams(password, salt, params)
+			defer wipeBytes(key)
+
+			block, err := aes.NewCipher(key)
+			if err != nil {
+				return nil, err
+			}
+			gcm, err := cipher.NewGCM(block)
+			if err != nil {
+				return nil, err
+			}
+
+			nonceSize := gcm.NonceSize()
+			if len(data) < off+nonceSize {
+				return nil, errors.New("ciphertext too short")
+			}
+			nonce := data[off : off+nonceSize]
+			ciphertext := data[off+nonceSize:]
+			return gcm.Open(nil, nonce, ciphertext, nil)
+		}
 	}
 
-	salt := data[:16]
-	key := deriveKey(password, salt)
+	// Legacy format: salt (16) || nonce (12) || ciphertext; fixed legacy KDF params.
+	if len(data) < walletEncSaltLen+12 {
+		return nil, errors.New("ciphertext too short")
+	}
+	salt := data[:walletEncSaltLen]
+	key := deriveKeyWithParams(password, salt, legacyKDFParams)
+	defer wipeBytes(key)
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
 	}
 
 	nonceSize := gcm.NonceSize()
-	if len(data) < 16+nonceSize {
+	if len(data) < walletEncSaltLen+nonceSize {
 		return nil, errors.New("ciphertext too short")
 	}
-
-	nonce := data[16 : 16+nonceSize]
-	ciphertext := data[16+nonceSize:]
-
+	nonce := data[walletEncSaltLen : walletEncSaltLen+nonceSize]
+	ciphertext := data[walletEncSaltLen+nonceSize:]
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
@@ -599,13 +903,63 @@ func unixNow() int64 {
 	return time.Now().Unix()
 }
 
+func (w *Wallet) readMnemonicFromDisk() (string, error) {
+	encrypted, err := os.ReadFile(w.filename)
+	if err != nil {
+		return "", err
+	}
+
+	plaintext, err := decrypt(encrypted, w.password)
+	if err != nil {
+		return "", err
+	}
+	defer wipeBytes(plaintext)
+
+	var disk struct {
+		ViewOnly  bool   `json:"view_only"`
+		Mnemonic  string `json:"mnemonic,omitempty"`
+		Version   uint32 `json:"version"`
+		CreatedAt int64  `json:"created_at"`
+	}
+	if err := json.Unmarshal(plaintext, &disk); err != nil {
+		return "", err
+	}
+	if disk.ViewOnly {
+		return "", nil
+	}
+	return disk.Mnemonic, nil
+}
+
 // ParseAddress decodes a stealth address into spend and view pubkeys
 func ParseAddress(address string) (spendPub, viewPub [32]byte, err error) {
 	decoded := base58.Decode(address)
-	if len(decoded) != 64 {
+
+	switch len(decoded) {
+	case 64:
+		// Legacy (no checksum). Accepted for backward compatibility.
+		copy(spendPub[:], decoded[:32])
+		copy(viewPub[:], decoded[32:])
+		return spendPub, viewPub, nil
+	case 68:
+		payload := decoded[:64]
+		checksum := decoded[64:]
+		sum := addressChecksum(payload)
+		if checksum[0] != sum[0] || checksum[1] != sum[1] || checksum[2] != sum[2] || checksum[3] != sum[3] {
+			return spendPub, viewPub, errors.New("invalid address checksum")
+		}
+		copy(spendPub[:], payload[:32])
+		copy(viewPub[:], payload[32:])
+		return spendPub, viewPub, nil
+	default:
 		return spendPub, viewPub, errors.New("invalid address length")
 	}
-	copy(spendPub[:], decoded[:32])
-	copy(viewPub[:], decoded[32:])
-	return spendPub, viewPub, nil
+}
+
+func addressChecksum(payload []byte) [32]byte {
+	const tag = "blocknet_stealth_address_checksum"
+	b := make([]byte, 0, len(tag)+len(params.NetworkID)+len(payload))
+	b = append(b, tag...)
+	b = append(b, params.NetworkID...)
+	b = append(b, payload...)
+	return sha3.Sum256(b)
 }

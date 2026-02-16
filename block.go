@@ -1,19 +1,30 @@
 package main
 
 import (
+	"container/list"
 	"crypto/rand"
+	"crypto/sha3"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"blocknet/protocol/params"
 	"blocknet/wallet"
+)
 
-	"golang.org/x/crypto/sha3"
+const (
+	// BLOCKNET_CHAIN_CACHE_CAP caps the number of blocks/work entries kept in RAM.
+	// Nodes can lower this to reduce memory or raise it to trade memory for speed.
+	chainCacheCapEnv        = "BLOCKNET_CHAIN_CACHE_CAP"
+	defaultChainCacheCap    = 512
+	chainCacheCapMinSlack   = 64
+	chainCacheCapHardMax    = 100_000
 )
 
 // ErrOrphanBlock is returned when a block's parent is not found
@@ -669,6 +680,12 @@ type Chain struct {
 	blocks map[[32]byte]*Block // hash -> block (recent blocks cache)
 	workAt map[[32]byte]uint64 // hash -> cumulative work at this block
 
+	// Cache eviction (LRU). This is strictly a performance/memory control and
+	// must not affect consensus behaviour.
+	cacheCap   int
+	cacheLRU   *list.List                 // front=MRU, back=LRU; values are [32]byte hashes
+	cacheIndex map[[32]byte]*list.Element // hash -> element in cacheLRU
+
 	// Main chain only
 	byHeight   map[uint64][32]byte // height -> hash (main chain only)
 	timestamps []int64             // recent timestamps for median calc
@@ -689,6 +706,119 @@ type Chain struct {
 	canonicalRingIndexReady bool
 }
 
+func chainProtectedBack() uint64 {
+	// Keep enough history to safely serve reorg/finality + LWMA difficulty windows.
+	return max(uint64(MaxReorgDepth), uint64(LWMAWindow+10))
+}
+
+func chainCacheCapFromEnv() int {
+	cap := defaultChainCacheCap
+	if v := os.Getenv(chainCacheCapEnv); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			cap = parsed
+		}
+	}
+	// Clamp to a reasonable hard max to avoid accidental runaway allocations.
+	if cap > chainCacheCapHardMax {
+		cap = chainCacheCapHardMax
+	}
+	minCap := int(chainProtectedBack()) + chainCacheCapMinSlack
+	if cap < minCap {
+		cap = minCap
+	}
+	return cap
+}
+
+func (c *Chain) cacheTouchLocked(hash [32]byte) {
+	if c.cacheLRU == nil {
+		return
+	}
+	if elem, ok := c.cacheIndex[hash]; ok {
+		c.cacheLRU.MoveToFront(elem)
+		return
+	}
+	c.cacheIndex[hash] = c.cacheLRU.PushFront(hash)
+}
+
+func (c *Chain) cacheForgetLocked(hash [32]byte) {
+	if elem, ok := c.cacheIndex[hash]; ok {
+		c.cacheLRU.Remove(elem)
+		delete(c.cacheIndex, hash)
+	}
+	delete(c.blocks, hash)
+	delete(c.workAt, hash)
+}
+
+func (c *Chain) cachePinnedLocked(hash [32]byte) bool {
+	b := c.blocks[hash]
+	if b == nil {
+		return false
+	}
+	h := b.Header.Height
+	mainHash, ok := c.byHeight[h]
+	if !ok || mainHash != hash {
+		return false
+	}
+	protectedBack := chainProtectedBack()
+	if c.height <= protectedBack {
+		return true
+	}
+	return h >= c.height-protectedBack
+}
+
+func (c *Chain) cacheTrimLocked() {
+	if c.cacheCap <= 0 || c.cacheLRU == nil {
+		return
+	}
+
+	// Trim based on the LRU/index size as the canonical bound.
+	//
+	// The cacheCap is defined as "caps the number of blocks/work entries kept in RAM".
+	// Invariant we want: cacheIndex/cacheLRU must never grow without bound, even if
+	// some call path touches hashes that aren't currently present in c.blocks.
+	for len(c.cacheIndex) > c.cacheCap || len(c.blocks) > c.cacheCap {
+		back := c.cacheLRU.Back()
+		if back == nil {
+			return
+		}
+		hash := back.Value.([32]byte)
+		if c.cachePinnedLocked(hash) {
+			// Pinned blocks must not be evicted; move it to the front so we
+			// make progress. This relies on cacheCap always being > pinned set size.
+			c.cacheLRU.MoveToFront(back)
+			continue
+		}
+		c.cacheForgetLocked(hash)
+	}
+}
+
+func (c *Chain) cumulativeWorkAtLocked(hash [32]byte) (uint64, error) {
+	if work, ok := c.workAt[hash]; ok {
+		return work, nil
+	}
+	block := c.getBlockByHashLocked(hash)
+	if block == nil {
+		return 0, fmt.Errorf("block not found for workAt: %x", hash[:8])
+	}
+
+	var parentWork uint64
+	if block.Header.Height > 0 {
+		w, err := c.cumulativeWorkAtLocked(block.Header.PrevHash)
+		if err != nil {
+			return 0, err
+		}
+		parentWork = w
+	}
+	work, err := addCumulativeWork(parentWork, block.Header.Difficulty)
+	if err != nil {
+		return 0, err
+	}
+	c.workAt[hash] = work
+	c.cacheTouchLocked(hash)
+	c.cacheTrimLocked()
+	return work, nil
+}
+
 // NewChain creates a new chain, loading state from storage
 func NewChain(dataDir string) (*Chain, error) {
 	storage, err := NewStorage(dataDir)
@@ -696,10 +826,14 @@ func NewChain(dataDir string) (*Chain, error) {
 		return nil, fmt.Errorf("failed to open storage: %w", err)
 	}
 
+	cacheCap := chainCacheCapFromEnv()
 	c := &Chain{
 		storage:                 storage,
 		blocks:                  make(map[[32]byte]*Block),
 		workAt:                  make(map[[32]byte]uint64),
+		cacheCap:                cacheCap,
+		cacheLRU:                list.New(),
+		cacheIndex:              make(map[[32]byte]*list.Element, cacheCap),
 		byHeight:                make(map[uint64][32]byte),
 		timestamps:              make([]int64, 0, LWMAWindow+1),
 		keyImages:               make(map[[32]byte]uint64),
@@ -733,8 +867,12 @@ func (c *Chain) loadFromStorage() error {
 
 	// Load recent blocks for LWMA calculation and height index
 	startHeight := uint64(0)
-	if tipHeight > uint64(LWMAWindow+10) {
-		startHeight = tipHeight - uint64(LWMAWindow+10)
+	// Keep enough main-chain history in memory to support reorg/finality
+	// paths that can legitimately touch the last `MaxReorgDepth` blocks.
+	// This also covers the LWMA window (+ small buffer) used for difficulty.
+	preloadBack := max(uint64(LWMAWindow+10), uint64(MaxReorgDepth))
+	if tipHeight > preloadBack {
+		startHeight = tipHeight - preloadBack
 	}
 
 	for h := startHeight; h <= tipHeight; h++ {
@@ -752,6 +890,7 @@ func (c *Chain) loadFromStorage() error {
 		}
 
 		c.blocks[hash] = block
+		c.cacheTouchLocked(hash)
 		c.byHeight[h] = hash
 
 		// Calculate work
@@ -780,6 +919,7 @@ func (c *Chain) loadFromStorage() error {
 			}
 		}
 	}
+	c.cacheTrimLocked()
 
 	// Fix cumulative work: the loop above computed workAt relative to 0
 	// because the parent of startHeight wasn't loaded. Offset every entry
@@ -846,6 +986,12 @@ func (c *Chain) GetBlock(hash [32]byte) *Block {
 	block, ok := c.blocks[hash]
 	c.mu.RUnlock()
 	if ok {
+		// Best-effort LRU touch without changing read-lock semantics.
+		c.mu.Lock()
+		if c.blocks[hash] != nil {
+			c.cacheTouchLocked(hash)
+		}
+		c.mu.Unlock()
 		return block
 	}
 
@@ -855,10 +1001,13 @@ func (c *Chain) GetBlock(hash [32]byte) *Block {
 		c.mu.Lock()
 		// Re-check in case another goroutine already cached it.
 		if cached, exists := c.blocks[hash]; exists {
+			c.cacheTouchLocked(hash)
 			c.mu.Unlock()
 			return cached
 		}
 		c.blocks[hash] = block
+		c.cacheTouchLocked(hash)
+		c.cacheTrimLocked()
 		c.mu.Unlock()
 	}
 	return block
@@ -998,12 +1147,14 @@ func (c *Chain) addBlockInternal(block *Block) error {
 
 	// Update in-memory state
 	c.blocks[hash] = block
+	c.cacheTouchLocked(hash)
 	c.workAt[hash] = blockWork
 	c.byHeight[block.Header.Height] = hash
 	c.bestHash = hash
 	c.height = block.Header.Height
 	c.totalWork = blockWork
 	c.canonicalRingIndexDirty = true
+	c.cacheTrimLocked()
 
 	// Track timestamp for LWMA
 	c.timestamps = append(c.timestamps, block.Header.Timestamp)
@@ -1037,7 +1188,11 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 	// Calculate work at this block
 	var parentWork uint64
 	if block.Header.Height > 0 {
-		parentWork = c.workAt[block.Header.PrevHash]
+		var err error
+		parentWork, err = c.cumulativeWorkAtLocked(block.Header.PrevHash)
+		if err != nil {
+			return false, false, fmt.Errorf("failed to compute parent work: %w", err)
+		}
 	}
 	blockWork, err := addCumulativeWork(parentWork, block.Header.Difficulty)
 	if err != nil {
@@ -1046,7 +1201,9 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 
 	// Store block in memory (always, even if not main chain)
 	c.blocks[hash] = block
+	c.cacheTouchLocked(hash)
 	c.workAt[hash] = blockWork
+	c.cacheTrimLocked()
 
 	// Does this create a heavier chain?
 	if blockWork > c.totalWork {
@@ -1056,8 +1213,7 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 		// Need to reorganize to this chain
 		if err := c.reorganizeTo(hash); err != nil {
 			// Reorg failed - remove from memory
-			delete(c.blocks, hash)
-			delete(c.workAt, hash)
+			c.cacheForgetLocked(hash)
 			return false, false, fmt.Errorf("reorg failed: %w", err)
 		}
 		return true, true, nil
@@ -1226,11 +1382,14 @@ func medianTimestampFromParent(parent *Block, getParent func([32]byte) *Block, n
 
 func (c *Chain) getBlockByHashLocked(hash [32]byte) *Block {
 	if block, ok := c.blocks[hash]; ok {
+		c.cacheTouchLocked(hash)
 		return block
 	}
 	block, _ := c.storage.GetBlock(hash)
 	if block != nil {
 		c.blocks[hash] = block
+		c.cacheTouchLocked(hash)
+		c.cacheTrimLocked()
 	}
 	return block
 }
@@ -1406,13 +1565,18 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 		connect = append([]*Block{c.blocks[newPath[h]]}, connect...)
 	}
 
+	newTipWork, err := c.cumulativeWorkAtLocked(newTip)
+	if err != nil {
+		return fmt.Errorf("failed to compute reorg tip work: %w", err)
+	}
+
 	// Commit reorg atomically to storage
 	reorgCommit := &ReorgCommit{
 		Disconnect: disconnect,
 		Connect:    connect,
 		NewTip:     newTip,
 		NewHeight:  newBlock.Header.Height,
-		NewWork:    c.workAt[newTip],
+		NewWork:    newTipWork,
 	}
 
 	if err := c.storage.CommitReorg(reorgCommit); err != nil {
@@ -1436,6 +1600,7 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 	// Add connected blocks to height index and key images
 	for _, block := range connect {
 		hash := block.Hash()
+		c.cacheTouchLocked(hash)
 		c.byHeight[block.Header.Height] = hash
 		c.timestamps = append(c.timestamps, block.Header.Timestamp)
 		if len(c.timestamps) > LWMAWindow+1 {
@@ -1453,8 +1618,10 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 	// Update chain state
 	c.bestHash = newTip
 	c.height = newBlock.Header.Height
-	c.totalWork = c.workAt[newTip]
+	c.totalWork = newTipWork
 	c.canonicalRingIndexDirty = true
+	c.cacheTouchLocked(newTip)
+	c.cacheTrimLocked()
 
 	return nil
 }
@@ -1470,6 +1637,8 @@ func (c *Chain) enforceReorgFinalityLocked(newTip [32]byte) error {
 	if newBlock == nil {
 		if loaded, _ := c.storage.GetBlock(newTip); loaded != nil {
 			c.blocks[newTip] = loaded
+			c.cacheTouchLocked(newTip)
+			c.cacheTrimLocked()
 			newBlock = loaded
 		} else {
 			return fmt.Errorf("unknown reorg tip")
@@ -1512,10 +1681,14 @@ func (c *Chain) getAncestorPath(tip [32]byte) [][32]byte {
 	if !exists {
 		if b, _ := c.storage.GetBlock(tip); b != nil {
 			c.blocks[tip] = b
+			c.cacheTouchLocked(tip)
+			c.cacheTrimLocked()
 			block = b
 		} else {
 			return nil
 		}
+	} else {
+		c.cacheTouchLocked(tip)
 	}
 
 	path := make([][32]byte, block.Header.Height+1)
@@ -1525,10 +1698,14 @@ func (c *Chain) getAncestorPath(tip [32]byte) [][32]byte {
 		if !exists {
 			if loaded, _ := c.storage.GetBlock(current); loaded != nil {
 				c.blocks[current] = loaded
+				c.cacheTouchLocked(current)
+				c.cacheTrimLocked()
 				b = loaded
 			} else {
 				return nil
 			}
+		} else {
+			c.cacheTouchLocked(current)
 		}
 		path[b.Header.Height] = current
 		if b.Header.Height == 0 {
@@ -1580,8 +1757,7 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 		}
 		delete(c.byHeight, h)
 		hash := block.Hash()
-		delete(c.blocks, hash)
-		delete(c.workAt, hash)
+		c.cacheForgetLocked(hash)
 	}
 
 	// Set new tip
@@ -1590,12 +1766,17 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 		return fmt.Errorf("block at height %d not found after truncation", keepHeight)
 	}
 	newHash := newTip.Hash()
-	newWork := c.workAt[newHash]
+	newWork, err := c.cumulativeWorkAtLocked(newHash)
+	if err != nil {
+		return fmt.Errorf("failed to compute cumulative work for new tip: %w", err)
+	}
 
 	c.bestHash = newHash
 	c.height = keepHeight
 	c.totalWork = newWork
 	c.canonicalRingIndexDirty = true
+	c.cacheTouchLocked(newHash)
+	c.cacheTrimLocked()
 
 	// Rebuild timestamps window from the kept chain
 	c.timestamps = nil
