@@ -64,7 +64,7 @@ func NewStorage(dataDir string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	dbPath := filepath.Join(dataDir, "chain.db")
+	dbPath := filepath.Join(dataDir, DefaultChainDBFilename)
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{
 		NoSync: false, // Ensure durability
 	})

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -47,6 +49,8 @@ type ChainStatus struct {
 	Height    uint64   `json:"height"`
 	TotalWork uint64   `json:"total_work"`
 	Version   uint32   `json:"version"`
+	NetworkID string   `json:"network_id"`
+	ChainID   uint32   `json:"chain_id"`
 }
 
 // HeadersRequest requests headers starting from a height
@@ -237,6 +241,11 @@ func (sm *SyncManager) HandleStream(s network.Stream) {
 func (sm *SyncManager) handleStatus(s network.Stream, data []byte) {
 	var status ChainStatus
 	if err := json.Unmarshal(data, &status); err != nil {
+		return
+	}
+	if status.NetworkID != params.NetworkID || status.ChainID != params.ChainID {
+		// Hard split: don't respond to or sync from other networks/epochs.
+		sm.node.PenalizePeer(s.Conn().RemotePeer(), ScorePenaltyInvalid, "chain status mismatch")
 		return
 	}
 
@@ -599,6 +608,10 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 	var status ChainStatus
 	if err := json.Unmarshal(data, &status); err != nil {
 		return ChainStatus{}, err
+	}
+	if status.NetworkID != params.NetworkID || status.ChainID != params.ChainID {
+		sm.node.PenalizePeer(p, ScorePenaltyInvalid, "chain status mismatch")
+		return ChainStatus{}, fmt.Errorf("chain status mismatch")
 	}
 
 	return status, nil

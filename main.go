@@ -11,12 +11,12 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.3.1"
+const Version = "0.4.1"
 
 func main() {
 	// Parse command line flags
-	walletFile := flag.String("wallet", "wallet.dat", "Path to wallet file")
-	dataDir := flag.String("data", "./data", "Data directory")
+	walletFile := flag.String("wallet", DefaultWalletFilename, "Path to wallet file")
+	dataDir := flag.String("data", DefaultDataDir, "Data directory")
 	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
 	seedMode := flag.Bool("seed", false, "Run as seed node (persistent P2P identity)")
 	recover := flag.Bool("recover", false, "Recover wallet from mnemonic seed")
@@ -30,6 +30,25 @@ func main() {
 	viewPrivDeprecated := flag.String("view-priv", "", "DEPRECATED (insecure): do not pass view private key via CLI; use --view-priv-env/BLOCKNET_VIEW_PRIV")
 	viewPrivEnv := flag.String("view-priv-env", "BLOCKNET_VIEW_PRIV", "Environment variable name containing view private key (hex) for view-only wallet")
 	flag.Parse()
+
+	// Quarantine well-known legacy default paths before any init work.
+	// This is intentionally conservative: it only quarantines legacy defaults
+	// when the operator did not explicitly provide the corresponding flags.
+	if renames, err := quarantineLegacyDefaults(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: legacy quarantine failed: %v\n", err)
+		os.Exit(1)
+	} else if len(renames) > 0 {
+		for _, r := range renames {
+			absFrom, _ := filepath.Abs(r.From)
+			absTo, _ := filepath.Abs(r.To)
+			if absFrom != "" && absTo != "" {
+				fmt.Fprintf(os.Stderr, "Quarantined legacy path: %s -> %s\n", absFrom, absTo)
+			} else {
+				fmt.Fprintf(os.Stderr, "Quarantined legacy path: %s -> %s\n", r.From, r.To)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "Warning: quarantined paths are pre-relaunch state and must not be reused.")
+	}
 
 	// View-only wallet creation mode
 	if *viewOnly {

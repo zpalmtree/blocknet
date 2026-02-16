@@ -59,8 +59,8 @@ type CLIConfig struct {
 // DefaultCLIConfig returns default CLI configuration
 func DefaultCLIConfig() CLIConfig {
 	return CLIConfig{
-		WalletFile:  "wallet.dat",
-		DataDir:     "./data",
+		WalletFile:  DefaultWalletFilename,
+		DataDir:     DefaultDataDir,
 		ListenAddrs: []string{"/ip4/0.0.0.0/tcp/28080"},
 		SeedNodes:   DefaultSeedNodes,
 		Mining:      false,

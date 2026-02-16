@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"blocknet/protocol/params"
 )
 
 func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) {
@@ -24,7 +26,7 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 	// Node B: serve blocks-by-height over the real sync protocol.
 	smB := NewSyncManager(b, SyncConfig{
 		GetStatus: func() ChainStatus {
-			return ChainStatus{Height: h1, Version: 1}
+			return ChainStatus{Height: h1, Version: 1, NetworkID: params.NetworkID, ChainID: params.ChainID}
 		},
 		GetBlocksByHeight: func(startHeight uint64, max int) ([][]byte, error) {
 			out := make([][]byte, 0, max)
@@ -50,7 +52,7 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 
 	smA := NewSyncManager(a, SyncConfig{
 		GetStatus: func() ChainStatus {
-			return ChainStatus{Height: ourHeight, Version: 1}
+			return ChainStatus{Height: ourHeight, Version: 1, NetworkID: params.NetworkID, ChainID: params.ChainID}
 		},
 		ProcessBlock: func(data []byte) error {
 			switch processMode {
@@ -72,7 +74,7 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 	smA.Start(ctx)
 	defer smA.Stop()
 
-	peers := []PeerStatus{{Peer: b.PeerID(), Status: ChainStatus{Height: h1, Version: 1}}}
+	peers := []PeerStatus{{Peer: b.PeerID(), Status: ChainStatus{Height: h1, Version: 1, NetworkID: params.NetworkID, ChainID: params.ChainID}}}
 
 	t.Run("invalid_not_rewarded_and_penalized", func(t *testing.T) {
 		// Ensure score record exists via the invalid-path penalty creation.

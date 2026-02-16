@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"blocknet/p2p"
+	"blocknet/protocol/params"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -70,6 +71,33 @@ const (
 	maxGossipBlockAttemptEntries = 4096
 	gossipBlockAttemptTTL        = 30 * time.Minute
 )
+
+func verifyStoredGenesisMatchesRelaunchGenesis(chain *Chain) error {
+	if chain == nil {
+		return fmt.Errorf("nil chain")
+	}
+	have := chain.GetBlockByHeight(0)
+	if have == nil {
+		return fmt.Errorf("chain has stored tip but no height-0 block found")
+	}
+	expected, err := GetGenesisBlock()
+	if err != nil {
+		return fmt.Errorf("failed to construct expected genesis: %w", err)
+	}
+
+	// Required by relaunch runbook: exact height-0 match (hash + header fields).
+	if have.Header != expected.Header {
+		return fmt.Errorf("genesis mismatch: stored header does not match relaunch genesis header")
+	}
+	if haveHash, expHash := have.Hash(), expected.Hash(); haveHash != expHash {
+		return fmt.Errorf("genesis mismatch: stored hash %x != expected %x", haveHash[:8], expHash[:8])
+	}
+	// Defensive: also ensure stored genesis satisfies the current validator rules.
+	if err := validateGenesisBlock(have); err != nil {
+		return fmt.Errorf("genesis mismatch: stored genesis fails validation: %w", err)
+	}
+	return nil
+}
 
 type gossipAttemptEntry struct {
 	pid  peer.ID
@@ -176,7 +204,7 @@ func DefaultDaemonConfig() DaemonConfig {
 		ListenAddrs:  []string{"/ip4/0.0.0.0/tcp/28080"},
 		SeedNodes:    DefaultSeedNodes,
 		EnableMining: false,
-		DataDir:      "./data",
+		DataDir:      DefaultDataDir,
 	}
 }
 
@@ -200,6 +228,18 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create chain: %w", err)
+	}
+
+	// If chain state already exists, fail fast if the stored genesis does not
+	// match the current hardcoded relaunch genesis.
+	if chain.HasGenesis() {
+		if err := verifyStoredGenesisMatchesRelaunchGenesis(chain); err != nil {
+			if closeErr := chain.Close(); closeErr != nil {
+				log.Printf("Warning: failed to close chain after genesis mismatch: %v", closeErr)
+			}
+			cancel()
+			return nil, err
+		}
 	}
 
 	// Create genesis block if chain is empty (no blocks exist)
@@ -665,6 +705,8 @@ func (d *Daemon) getChainStatus() p2p.ChainStatus {
 		Height:    d.chain.Height(),
 		TotalWork: d.chain.TotalWork(),
 		Version:   1,
+		NetworkID: params.NetworkID,
+		ChainID:   params.ChainID,
 	}
 }
 

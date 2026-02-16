@@ -52,7 +52,7 @@ func DefaultIdentityConfig() IdentityConfig {
 //
 // Identity resolution order:
 //  1. BLOCKNET_P2P_KEY env var → load or create key at that path, never rotate
-//  2. XDG config dir (e.g. ~/.config/blocknet/identity.key) → if exists, load it, never rotate
+//  2. XDG config dir (e.g. ~/.config/blocknet/mainnet/identity.key) → if exists, load it, never rotate
 //  3. Otherwise → ephemeral identity with rotation
 func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 	var key crypto.PrivKey
@@ -121,7 +121,7 @@ func defaultIdentityPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDir, "blocknet", "identity.key"), nil
+	return filepath.Join(configDir, "blocknet", "mainnet", "identity.key"), nil
 }
 
 // loadIdentity loads an identity from disk

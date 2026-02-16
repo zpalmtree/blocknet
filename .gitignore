@@ -24,6 +24,8 @@ identity.key
 # Chain/node data
 data/
 chain.db
+blocknet-data-mainnet/
+blocknet-mainnet.chain.db
 
 # Build artifacts
 releases/

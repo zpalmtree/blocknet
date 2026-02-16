@@ -1948,16 +1948,17 @@ func (c *Chain) FindTxByHashStr(hashStr string) (*Transaction, uint64, bool) {
 // Genesis Block
 // ============================================================================
 
-// Source: https://cnbc.com/2026/02/02/bitcoin-btc-price-today-cryptocurrency.html
-const GenesisMessage = "CNBC 02/Feb/2026 Bitcoin is coming off a brutal week"
+// Source: https://www.wired.com/story/the-nothing-that-has-the-potential-to-be-anything/
+const GenesisMessage = "Wired 2026/02/15 - The Nothing That Has the Potential to Be Anything"
 
 // GenesisPrevHash returns SHA3-256(GenesisMessage)
 func GenesisPrevHash() [32]byte {
 	return sha3.Sum256([]byte(GenesisMessage))
 }
 
-// GenesisTimestamp is the fixed genesis block timestamp (Feb 5, 2026 00:00:00 UTC)
-const GenesisTimestamp int64 = 1770249600
+// GenesisTimestamp is the fixed genesis block timestamp (unix seconds, UTC).
+// Derived from the relaunch time unix nanoseconds: 1771207118829000000.
+const GenesisTimestamp int64 = 1771207118
 
 // GetGenesisBlock returns the hardcoded genesis block (same for all nodes)
 func GetGenesisBlock() (*Block, error) {

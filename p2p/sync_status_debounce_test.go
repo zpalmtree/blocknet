@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p/core/network"
 )
 
@@ -23,7 +25,7 @@ func TestStatusTriggeredSync_IsDebouncedAndSerialized(t *testing.T) {
 	// Set both sides to report identical status so that checkSync() does NOT
 	// spawn parallelSyncFrom(). We only want to test the status-triggered
 	// debounce/serialization behavior.
-	our := ChainStatus{BestHash: [32]byte{}, Height: 10, TotalWork: 100, Version: 1}
+	our := ChainStatus{BestHash: [32]byte{}, Height: 10, TotalWork: 100, Version: 1, NetworkID: params.NetworkID, ChainID: params.ChainID}
 
 	smA := NewSyncManager(a, SyncConfig{
 		GetStatus: func() ChainStatus { return our },

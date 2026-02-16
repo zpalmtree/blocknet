@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -21,11 +23,11 @@ import (
 
 // Protocol IDs for blocknet
 const (
-	ProtocolPEX       protocol.ID = "/blocknet/pex/1.0.0"
-	ProtocolBlock     protocol.ID = "/blocknet/block/1.0.0"
-	ProtocolTx        protocol.ID = "/blocknet/tx/1.0.0"
-	ProtocolSync      protocol.ID = "/blocknet/sync/1.0.0"
-	ProtocolDandelion protocol.ID = "/blocknet/dandelion/1.0.0"
+	ProtocolPEX       protocol.ID = params.ProtocolPEX
+	ProtocolBlock     protocol.ID = params.ProtocolBlock
+	ProtocolTx        protocol.ID = params.ProtocolTx
+	ProtocolSync      protocol.ID = params.ProtocolSync
+	ProtocolDandelion protocol.ID = params.ProtocolDandelion
 )
 
 // NodeConfig configures the P2P node
