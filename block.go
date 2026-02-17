@@ -1854,6 +1854,26 @@ func (c *Chain) TotalWork() uint64 {
 	return c.totalWork
 }
 
+// BlockTemplateParams holds the chain state needed to build a block template,
+// read atomically under a single lock to prevent TOCTOU races during reorgs.
+type BlockTemplateParams struct {
+	Height     uint64
+	PrevHash   [32]byte
+	Difficulty uint64
+}
+
+// TemplateParams returns the next-block height, previous hash, and difficulty
+// as a consistent snapshot.
+func (c *Chain) TemplateParams() BlockTemplateParams {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return BlockTemplateParams{
+		Height:     c.height + 1,
+		PrevHash:   c.bestHash,
+		Difficulty: c.nextDifficultyLocked(),
+	}
+}
+
 // HasBlock returns true if the block is known (on any chain)
 func (c *Chain) HasBlock(hash [32]byte) bool {
 	c.mu.RLock()

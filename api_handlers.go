@@ -901,12 +901,18 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	chain := s.daemon.Chain()
-	height := chain.Height() + 1
-	reward := GetBlockReward(height)
+	if s.daemon.syncMgr.IsSyncing() {
+		writeError(w, http.StatusServiceUnavailable, "node is syncing")
+		return
+	}
+
+	// Read height, prevHash, and difficulty as a single atomic snapshot so a
+	// concurrent reorg cannot produce an inconsistent template.
+	tp := s.daemon.Chain().TemplateParams()
+	reward := GetBlockReward(tp.Height)
 
 	// Create coinbase paying to the loaded wallet
-	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward, height)
+	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward, tp.Height)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
@@ -924,10 +930,10 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	block := &Block{
 		Header: BlockHeader{
 			Version:    1,
-			Height:     height,
-			PrevHash:   chain.BestHash(),
+			Height:     tp.Height,
+			PrevHash:   tp.PrevHash,
 			Timestamp:  time.Now().Unix(),
-			Difficulty: chain.NextDifficulty(),
+			Difficulty: tp.Difficulty,
 			Nonce:      0,
 		},
 		Transactions: allTxs,

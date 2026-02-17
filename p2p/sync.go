@@ -412,6 +412,9 @@ func (sm *SyncManager) handleGetMempool(s network.Stream) {
 
 	txs := sm.getMempool()
 	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
+	if txs == nil {
+		txs = [][]byte{}
+	}
 	data, err := json.Marshal(txs)
 	if err != nil {
 		if err := writeMessage(s, SyncMsgMempool, []byte("[]")); err != nil {
@@ -556,6 +559,16 @@ collectStatuses:
 		return
 	}
 
+	// Only sync when peers have strictly more cumulative work.
+	// Height alone is not sufficient: a longer chain with less work should
+	// not trigger sync in a heaviest-chain protocol. Using height as a
+	// trigger causes infinite sync loops when our fork is heavier but
+	// shorter — downloaded blocks land as side-chain entries, the chain
+	// never advances, and the retry fires endlessly.
+	if maxWork <= ourStatus.TotalWork {
+		return
+	}
+
 	// Use the highest height among max work peers as target
 	targetHeight := syncPeers[0].Status.Height
 	for _, ps := range syncPeers {
@@ -564,10 +577,7 @@ collectStatuses:
 		}
 	}
 
-	// Sync if we're behind
-	if maxWork > ourStatus.TotalWork || targetHeight > ourStatus.Height {
-		go sm.parallelSyncFrom(syncPeers, targetHeight)
-	}
+	go sm.parallelSyncFrom(syncPeers, targetHeight)
 }
 
 // getStatusFrom requests status from a peer
@@ -827,10 +837,19 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	cancel()
 	downloadWg.Wait()
 
-	// After syncing blocks, request mempool from first peer
+	// After syncing blocks, request mempool — try each sync peer until one succeeds.
 	if len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
-		if err := sm.fetchAndProcessMempool(peers[0].Peer); err != nil {
-			log.Printf("[sync] failed to fetch mempool: %v", err)
+		var mempoolOK bool
+		for _, ps := range peers {
+			if err := sm.fetchAndProcessMempool(ps.Peer); err != nil {
+				log.Printf("[sync] failed to fetch mempool from %s: %v", ps.Peer.String()[:8], err)
+				continue
+			}
+			mempoolOK = true
+			break
+		}
+		if !mempoolOK {
+			log.Printf("[sync] mempool sync failed from all %d peers", len(peers))
 		}
 	}
 
