@@ -1066,6 +1066,7 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 
 	if isMainChain {
 		d.updateMempoolForAcceptedMainChain(block, prevBest)
+		d.miner.NotifyNewBlock()
 	}
 
 	// Broadcast to peers
