@@ -21,10 +21,10 @@ import (
 const (
 	// BLOCKNET_CHAIN_CACHE_CAP caps the number of blocks/work entries kept in RAM.
 	// Nodes can lower this to reduce memory or raise it to trade memory for speed.
-	chainCacheCapEnv        = "BLOCKNET_CHAIN_CACHE_CAP"
-	defaultChainCacheCap    = 512
-	chainCacheCapMinSlack   = 64
-	chainCacheCapHardMax    = 100_000
+	chainCacheCapEnv      = "BLOCKNET_CHAIN_CACHE_CAP"
+	defaultChainCacheCap  = 512
+	chainCacheCapMinSlack = 64
+	chainCacheCapHardMax  = 100_000
 )
 
 // ErrOrphanBlock is returned when a block's parent is not found
@@ -1031,6 +1031,31 @@ func (c *Chain) GetBlockByHeight(height uint64) *Block {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.getBlockByHeightLocked(height)
+}
+
+// GetBlocksByHeightRange returns main-chain blocks in [startHeight, endHeight],
+// stopping early if any height is missing.
+//
+// This holds a single read lock for the duration so callers can snapshot blocks
+// without paying RWMutex writer-preference overhead per height.
+func (c *Chain) GetBlocksByHeightRange(startHeight, endHeight uint64) []*Block {
+	if startHeight > endHeight {
+		return nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Pre-size to the full range; caller may get fewer if we stop early.
+	blocks := make([]*Block, 0, int(endHeight-startHeight+1))
+	for h := startHeight; h <= endHeight; h++ {
+		b := c.getBlockByHeightLocked(h)
+		if b == nil {
+			break
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks
 }
 
 // getBlockByHeightLocked is the lock-safe inner implementation.

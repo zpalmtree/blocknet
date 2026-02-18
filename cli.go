@@ -22,23 +22,23 @@ import (
 
 // CLI handles the interactive command-line interface
 type CLI struct {
-	daemon     *Daemon
-	wallet     *wallet.Wallet
-	scanner    *wallet.Scanner
-	ctx        context.Context
-	cancel     context.CancelFunc
-	reader     *bufio.Reader
-	locked     bool
+	daemon          *Daemon
+	wallet          *wallet.Wallet
+	scanner         *wallet.Scanner
+	ctx             context.Context
+	cancel          context.CancelFunc
+	reader          *bufio.Reader
+	locked          bool
 	passwordHash    [32]byte
 	passwordHashSet bool
-	startTime  time.Time
-	daemonMode bool
-	noColor    bool
-	api        *APIServer
-	apiAddr    string
-	dataDir    string
-	walletFile string
-	mu         sync.RWMutex // protects wallet/scanner/passwordHash during hot-load
+	startTime       time.Time
+	daemonMode      bool
+	noColor         bool
+	api             *APIServer
+	apiAddr         string
+	dataDir         string
+	walletFile      string
+	mu              sync.RWMutex // protects wallet/scanner/passwordHash during hot-load
 }
 
 // CLIConfig holds CLI configuration
@@ -490,7 +490,7 @@ Commands:%s
   banned            List banned peers
   export-peer       Export peer address to peer.txt
   mining start|stop|threads Control mining
-  sync              Force chain sync
+  sync              Rescan blocks for outputs
   seed              Show wallet recovery seed (careful!)
   viewkeys          Export view-only wallet keys
   lock              Lock wallet
@@ -718,7 +718,7 @@ func (c *CLI) cmdHistory() {
 		height    uint64
 		color     string
 		txHash    [32]byte
-		memo []byte
+		memo      []byte
 	}
 
 	var events []historyEvent
@@ -926,9 +926,12 @@ func (c *CLI) cmdSync() {
 
 	fmt.Printf("Scanning %d blocks...\n", chainHeight-walletHeight)
 
-	// Scan blocks from wallet height to chain height
-	for h := walletHeight + 1; h <= chainHeight; h++ {
-		block := c.daemon.Chain().GetBlockByHeight(h)
+	// Snapshot blocks under a single chain read lock so we don't pay RWMutex
+	// writer-preference overhead per height while the node is ingesting blocks.
+	blocks := c.daemon.Chain().GetBlocksByHeightRange(walletHeight+1, chainHeight)
+
+	scannedTo := walletHeight
+	for _, block := range blocks {
 		if block == nil {
 			break
 		}
@@ -936,13 +939,17 @@ func (c *CLI) cmdSync() {
 		blockData := blockToScanData(block)
 		found, spent := c.scanner.ScanBlock(blockData)
 
+		h := block.Header.Height
+		scannedTo = h
 		if found > 0 || spent > 0 {
 			fmt.Printf("  Block %d: +%d outputs, %d spent\n", h, found, spent)
 		}
 	}
 
-	c.wallet.SetSyncedHeight(chainHeight)
-	fmt.Printf("Wallet synced to height %d\n", chainHeight)
+	if scannedTo > walletHeight {
+		c.wallet.SetSyncedHeight(scannedTo)
+		fmt.Printf("Wallet synced to height %d\n", scannedTo)
+	}
 }
 
 func (c *CLI) cmdSeed() error {

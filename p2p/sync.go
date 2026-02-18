@@ -528,7 +528,7 @@ func (sm *SyncManager) checkSync() {
 	var peerStatuses []PeerStatus
 	statusTimeout := time.After(15 * time.Second)
 collectStatuses:
-	for i := 0; i < len(peers); i++ {
+	for range len(peers) {
 		select {
 		case r := <-resultCh:
 			if r.err == nil {
@@ -667,13 +667,9 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	sm.syncProgress = ourStatus.Height
 	sm.mu.Unlock()
 
-	// log.Printf("[sync] starting parallel sync from height %d to %d with %d peers", startHeight, targetHeight, len(peers))
 
 	// Use up to 3 peers for parallel download
-	numDownloaders := len(peers)
-	if numDownloaders > 3 {
-		numDownloaders = 3
-	}
+	numDownloaders := min(len(peers), 3)
 
 	// Channel to receive downloaded blocks
 	blockChan := make(chan DownloadedBlock, MaxBlocksPerRequest*numDownloaders)
@@ -1365,6 +1361,12 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 
 	if msgType != SyncMsgMempool {
 		return fmt.Errorf("unexpected message type: %d", msgType)
+	}
+
+	// Some older peers may encode an empty mempool as JSON `null` (marshaled nil slice).
+	// Treat it as empty for compatibility.
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
 	}
 
 	if err := ensureJSONArrayMaxItems(data, MaxSyncMempoolTxCount); err != nil {
