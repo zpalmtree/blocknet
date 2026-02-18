@@ -213,7 +213,7 @@ func (sm *SyncManager) Stop() {
 // HandleStream handles incoming sync protocol streams
 func (sm *SyncManager) HandleStream(s network.Stream) {
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close inbound sync stream: %v", err)
 		}
 	}()
@@ -395,7 +395,7 @@ func (sm *SyncManager) relayBlock(from peer.ID, data []byte) {
 				return
 			}
 			defer func() {
-				if err := s.Close(); err != nil {
+				if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 					log.Printf("failed to close relay sync stream to %s: %v", pid, err)
 				}
 			}()
@@ -596,7 +596,7 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 		return ChainStatus{}, err
 	}
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close status sync stream to %s: %v", p, err)
 		}
 	}()
@@ -1173,7 +1173,7 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 		return nil, err
 	}
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close blocks sync stream to %s: %v", p, err)
 		}
 	}()
@@ -1252,7 +1252,7 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 		return nil, err
 	}
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close blocks-by-height sync stream to %s: %v", p, err)
 		}
 	}()
@@ -1303,7 +1303,7 @@ func (sm *SyncManager) BroadcastBlock(blockData []byte) {
 				return
 			}
 			defer func() {
-				if err := s.Close(); err != nil {
+				if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 					log.Printf("failed to close broadcast sync stream to %s: %v", pid, err)
 				}
 			}()
@@ -1344,7 +1344,7 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 		return err
 	}
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close mempool sync stream to %s: %v", p, err)
 		}
 	}()

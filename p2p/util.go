@@ -2,8 +2,10 @@ package p2p
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 const (
@@ -98,4 +100,30 @@ func readMessageWithLimit(r io.Reader, maxForType func(byte) (uint32, error)) (b
 	}
 
 	return typeBuf[0], data, nil
+}
+
+// isExpectedStreamCloseError returns true for close/reset errors that are common
+// when the remote peer already hung up (disconnects, restarts, conn manager, etc).
+// These are noisy and not actionable for normal operators, so callers can suppress
+// console logging for them.
+func isExpectedStreamCloseError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	// libp2p often wraps these as plain errors with descriptive text.
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "stream reset"),
+		strings.Contains(msg, "connection closed"),
+		strings.Contains(msg, "use of closed network connection"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "reset by peer"):
+		return true
+	default:
+		return false
+	}
 }

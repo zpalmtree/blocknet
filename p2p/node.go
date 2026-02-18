@@ -253,7 +253,7 @@ func (n *Node) registerProtocols() {
 // handleBlockStream handles incoming block announcements
 func (n *Node) handleBlockStream(s network.Stream) {
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close block stream: %v", err)
 		}
 	}()
@@ -281,7 +281,7 @@ func (n *Node) handleBlockStream(s network.Stream) {
 // All ProtocolTx ingress must pass through Dandelion fluff semantics.
 func (n *Node) handleTxStream(s network.Stream) {
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close tx stream: %v", err)
 		}
 	}()
@@ -301,7 +301,7 @@ func (n *Node) handleTxStream(s network.Stream) {
 // handleSyncStream handles chain sync requests
 func (n *Node) handleSyncStream(s network.Stream) {
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close sync stream: %v", err)
 		}
 	}()
@@ -423,7 +423,7 @@ func (n *Node) sendToPeer(p peer.ID, proto protocol.ID, data []byte) error {
 		return err
 	}
 	defer func() {
-		if err := s.Close(); err != nil {
+		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
 			log.Printf("failed to close outbound %s stream to %s: %v", proto, p, err)
 		}
 	}()
