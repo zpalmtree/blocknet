@@ -30,6 +30,10 @@ const (
 // ErrOrphanBlock is returned when a block's parent is not found
 var ErrOrphanBlock = errors.New("orphan block")
 
+// ErrStaleBlock is returned when a block is valid in isolation but was built
+// against an old tip (e.g. miner solved work after the chain advanced).
+var ErrStaleBlock = errors.New("stale block")
+
 func addCumulativeWork(parentWork, blockDifficulty uint64) (uint64, error) {
 	if blockDifficulty > math.MaxUint64-parentWork {
 		return 0, fmt.Errorf("cumulative work overflow: parent=%d difficulty=%d", parentWork, blockDifficulty)
@@ -236,13 +240,19 @@ func ValidateBlock(block *Block, chain *Chain) error {
 	}
 
 	// Height check
-	if header.Height != chain.Height()+1 {
-		return fmt.Errorf("invalid height: expected %d, got %d", chain.Height()+1, header.Height)
+	expectedHeight := chain.Height() + 1
+	if header.Height != expectedHeight {
+		// Treat "behind tip" as stale work so API can report it cleanly.
+		if header.Height <= chain.Height() {
+			return fmt.Errorf("%w: expected height %d, got %d", ErrStaleBlock, expectedHeight, header.Height)
+		}
+		return fmt.Errorf("invalid height: expected %d, got %d", expectedHeight, header.Height)
 	}
 
 	// Previous hash check
 	if header.PrevHash != chain.BestHash() {
-		return fmt.Errorf("invalid prev hash: does not link to best block")
+		// For mining submitblock, this almost always means the tip advanced.
+		return fmt.Errorf("%w: does not build on current tip", ErrStaleBlock)
 	}
 
 	// Timestamp validation

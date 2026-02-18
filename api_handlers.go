@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -997,6 +998,10 @@ func (s *APIServer) handleSubmitBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.daemon.SubmitBlock(&block); err != nil {
+		if errors.Is(err, ErrStaleBlock) {
+			writeError(w, http.StatusBadRequest, "block rejected as stale")
+			return
+		}
 		writeInternal(w, r, http.StatusBadRequest, "block rejected", err)
 		return
 	}
