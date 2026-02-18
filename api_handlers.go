@@ -911,8 +911,23 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	tp := s.daemon.Chain().TemplateParams()
 	reward := GetBlockReward(tp.Height)
 
-	// Create coinbase paying to the loaded wallet
-	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward, tp.Height)
+	// Optionally override the coinbase destination (pool/dev-fee switching).
+	recipientSpendPub := s.wallet.SpendPubKey()
+	recipientViewPub := s.wallet.ViewPubKey()
+	rewardAddrUsed := s.wallet.Address()
+	if addr := sanitizeInput(r.URL.Query().Get("address")); addr != "" {
+		spendPub, viewPub, err := wallet.ParseAddress(addr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid address")
+			return
+		}
+		recipientSpendPub = spendPub
+		recipientViewPub = viewPub
+		rewardAddrUsed = addr
+	}
+
+	// Create coinbase paying to the selected reward address
+	coinbase, err := CreateCoinbase(recipientSpendPub, recipientViewPub, reward, tp.Height)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
@@ -951,9 +966,10 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	target := DifficultyToTarget(block.Header.Difficulty)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"block":       block,
-		"target":      fmt.Sprintf("%x", target),
-		"header_base": fmt.Sprintf("%x", block.Header.SerializeForPoW()),
+		"block":               block,
+		"target":              fmt.Sprintf("%x", target),
+		"header_base":         fmt.Sprintf("%x", block.Header.SerializeForPoW()),
+		"reward_address_used": rewardAddrUsed,
 	})
 }
 

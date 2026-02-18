@@ -1174,7 +1174,17 @@
         "operationId": "getBlockTemplate",
         "tags": ["Mining"],
         "summary": "Get block template for pool mining",
-        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. Pool software should call this to get fresh work, distribute to miners, and submit solved blocks via `POST /api/mining/submitblock`. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
+        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. Pool software should call this to get fresh work, distribute to miners, and submit solved blocks via `POST /api/mining/submitblock`. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Optional reward address override. If provided, the coinbase output pays to this stealth address instead of the loaded wallet address.",
+            "example": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Block template",
@@ -1197,11 +1207,13 @@
                     "transactions": []
                   },
                   "target": "000000000000f4240000000000000000000000000000000000000000000000000",
-                  "header_base": "0100000080370000..."
+                  "header_base": "0100000080370000...",
+                  "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4"
                 }
               }
             }
           },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "503": { "$ref": "#/components/responses/NoWallet" }
         }
@@ -1794,6 +1806,10 @@
           "header_base": {
             "type": "string",
             "description": "Hex-encoded 92-byte serialized header without the nonce. This is the input to the Argon2id PoW hash function; append the 8-byte little-endian nonce to complete the hash input."
+          },
+          "reward_address_used": {
+            "type": "string",
+            "description": "The stealth address used for the coinbase output in this template. Mirrors the `address` query parameter if provided; otherwise it is the loaded wallet address."
           }
         }
       },

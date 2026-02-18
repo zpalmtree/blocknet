@@ -133,8 +133,14 @@ func (sm *SyncManager) penalizeInvalidBlockPeer(pid peer.ID, reason string) {
 	if pid == "" || sm.node == nil {
 		return
 	}
-	// Invalid block proof/data is severe misbehavior: deterministic immediate ban path.
 	sm.node.PenalizePeer(pid, ScorePenaltyMisbehave, reason)
+}
+
+func (sm *SyncManager) banInvalidBlockPeer(pid peer.ID, reason string) {
+	if pid == "" || sm.node == nil {
+		return
+	}
+	sm.node.BanPeer(pid, reason)
 }
 
 // SyncConfig configures the sync manager
@@ -360,7 +366,7 @@ func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 	if sm.processBlock != nil {
 		if err := sm.processBlock(data); err != nil {
 			if !sm.isDuplicateErr(err) && !sm.isOrphanErr(err) {
-				sm.penalizeInvalidBlockPeer(from, "invalid new block announcement")
+				sm.banInvalidBlockPeer(from, "invalid new block announcement")
 			}
 			return // duplicate, orphan, or invalid — don't relay
 		}
@@ -1042,7 +1048,7 @@ outer:
 
 				// This peer returned hash-matching data that still fails validation.
 				// Keep trying other peers for the same parent hash before failing.
-				sm.penalizeInvalidBlockPeer(sourcePeer, "invalid parent block data during orphan recovery")
+				sm.banInvalidBlockPeer(sourcePeer, "invalid parent block data during orphan recovery")
 				invalidPeers[sourcePeer] = struct{}{}
 				lastProcessErr = err
 				continue
@@ -1115,18 +1121,18 @@ func (sm *SyncManager) fetchBlockByHashFromAnyPeer(
 				return
 			}
 			if len(blocks) == 0 || len(blocks[0]) == 0 {
-				sm.penalizeInvalidBlockPeer(p, fmt.Sprintf("empty block response for requested hash %x", hash[:8]))
+				sm.banInvalidBlockPeer(p, fmt.Sprintf("empty block response for requested hash %x", hash[:8]))
 				ch <- result{peer: p, err: fmt.Errorf("peer %s returned no blocks for %x", p, hash[:8])}
 				return
 			}
 			blockHash, err := sm.getBlockHash(blocks[0])
 			if err != nil {
-				sm.penalizeInvalidBlockPeer(p, fmt.Sprintf("undecodable block response for requested hash %x", hash[:8]))
+				sm.banInvalidBlockPeer(p, fmt.Sprintf("undecodable block response for requested hash %x", hash[:8]))
 				ch <- result{peer: p, err: fmt.Errorf("peer %s returned undecodable block for %x: %w", p, hash[:8], err)}
 				return
 			}
 			if blockHash != hash {
-				sm.penalizeInvalidBlockPeer(p, fmt.Sprintf("mismatched block hash response for requested hash %x", hash[:8]))
+				sm.banInvalidBlockPeer(p, fmt.Sprintf("mismatched block hash response for requested hash %x", hash[:8]))
 				ch <- result{peer: p, err: fmt.Errorf("peer %s returned mismatched block hash %x for %x", p, blockHash[:8], hash[:8])}
 				return
 			}

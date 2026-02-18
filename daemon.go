@@ -668,6 +668,12 @@ func (d *Daemon) penalizeInvalidGossipPeer(pid peer.ID, penalty int, reason stri
 	if d.node == nil || pid == "" {
 		return
 	}
+	// Gossip validation failures are treated as severe misbehavior: ban immediately.
+	// (Tests and connection gating rely on deterministic bans here.)
+	if penalty <= p2p.ScorePenaltyMisbehave {
+		d.node.BanPeer(pid, reason)
+		return
+	}
 	d.node.PenalizePeer(pid, penalty, reason)
 }
 

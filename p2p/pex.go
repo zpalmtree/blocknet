@@ -932,8 +932,9 @@ func (pex *PeerExchange) PenalizePeer(pid peer.ID, penalty int, reason string) {
 		rec.Score = 0
 	}
 
-	// Immediate ban for severe misbehavior
-	if penalty <= ScorePenaltyMisbehave || rec.Score <= ScoreThresholdBan {
+	// Ban only once the peer's score is exhausted.
+	// Callers that want deterministic immediate bans should use BanPeer directly.
+	if rec.Score <= ScoreThresholdBan {
 		pex.banPeerLocked(pid, reason, BanDurationMedium)
 	}
 }
