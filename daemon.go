@@ -3,11 +3,14 @@ package main
 import (
 	"container/list"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +54,11 @@ type Daemon struct {
 
 	// Explorer
 	explorerAddr string
+
+	// Checkpoints
+	saveCheckpoints       bool
+	checkpointsFile       string
+	lastCheckpointWritten uint64
 
 	// State
 	ctx    context.Context
@@ -187,6 +195,10 @@ type DaemonConfig struct {
 
 	// ExplorerAddr is the HTTP address for the block explorer (empty = disabled)
 	ExplorerAddr string
+
+	// Checkpoints
+	SaveCheckpoints bool
+	FullSync        bool
 }
 
 // DefaultSeedNodes are the hardcoded bootstrap nodes
@@ -202,10 +214,12 @@ var DefaultSeedNodes = []string{
 // DefaultDaemonConfig returns sensible defaults
 func DefaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{
-		ListenAddrs:  []string{"/ip4/0.0.0.0/tcp/28080"},
-		SeedNodes:    DefaultSeedNodes,
-		EnableMining: false,
-		DataDir:      DefaultDataDir,
+		ListenAddrs:     []string{"/ip4/0.0.0.0/tcp/28080"},
+		SeedNodes:       DefaultSeedNodes,
+		EnableMining:    false,
+		DataDir:         DefaultDataDir,
+		SaveCheckpoints: false,
+		FullSync:        false,
 	}
 }
 
@@ -262,9 +276,49 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		}
 	}
 
-	// Verify chain integrity — truncate to last clean block if violations found
+	// Checkpoints: best-effort download/load for faster VerifyChain.
+	// This is an optimization (arithmetic-only) and should never prevent startup.
+	var checkpoints map[uint64][32]byte
+	var checkpointHeights []uint64
+	var checkpointsMaxHeight uint64
+	if !cfg.FullSync {
+		cpPath := checkpointsPath(cfg.DataDir)
+		if downloaded, err := ensureCheckpointsFile(cpPath); err != nil {
+			log.Printf("Warning: checkpoints unavailable: %v", err)
+		} else if downloaded {
+			log.Printf("Downloaded checkpoints: %s", cpPath)
+		}
+		if cps, heights, maxH, err := loadCheckpointsFile(cpPath); err == nil {
+			checkpoints = cps
+			checkpointHeights = heights
+			checkpointsMaxHeight = maxH
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Warning: failed to read checkpoints file %s: %v", cpPath, err)
+		}
+	}
+
+	// Enable checkpoint fast-sync (skip expensive PoW up to last checkpoint) while
+	// we're still below that height. This is trust-based and can be bypassed via
+	// --full-sync.
+	if !cfg.FullSync && len(checkpoints) > 0 && checkpointsMaxHeight > 0 {
+		chain.SetTrustedCheckpoints(checkpoints, checkpointsMaxHeight)
+	}
+
+	// Verify chain integrity — truncate to last clean block if violations found.
 	if chain.Height() > 0 {
-		violations := chain.VerifyChain()
+		var violations []ChainViolation
+		if cfg.FullSync || len(checkpoints) == 0 {
+			violations = chain.VerifyChain()
+		} else {
+			var usedHeight uint64
+			violations, usedHeight = chain.VerifyChainWithCheckpoints(checkpoints, checkpointHeights)
+			if usedHeight > 0 {
+				log.Printf("Checkpoint verify: using height %d (out of %d checkpoint(s))", usedHeight, len(checkpoints))
+			} else {
+				log.Printf("Checkpoint verify: no matching checkpoint found; falling back to full verify")
+				violations = chain.VerifyChain()
+			}
+		}
 		if len(violations) > 0 {
 			first := violations[0].Height
 			truncateTo := first - 1
@@ -317,6 +371,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		miner:                  miner,
 		node:                   node,
 		stealthKeys:            stealthKeys,
+		saveCheckpoints:        cfg.SaveCheckpoints,
+		checkpointsFile:        checkpointsPath(cfg.DataDir),
 		ctx:                    ctx,
 		cancel:                 cancel,
 		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
@@ -380,6 +436,13 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 
 	// Store explorer config
 	d.explorerAddr = cfg.ExplorerAddr
+
+	// Initialize checkpoint writer state (best-effort).
+	if d.saveCheckpoints {
+		if _, _, maxH, err := loadCheckpointsFile(d.checkpointsFile); err == nil && maxH > 0 {
+			d.lastCheckpointWritten = maxH
+		}
+	}
 
 	return d, nil
 }
@@ -800,7 +863,43 @@ func (d *Daemon) processBlockData(data []byte) error {
 	}
 
 	d.updateMempoolForAcceptedMainChain(&block, prevBest)
+	d.maybeAppendCheckpointLocked(&block)
 	return nil
+}
+
+func (d *Daemon) maybeAppendCheckpointLocked(block *Block) {
+	if !d.saveCheckpoints || block == nil {
+		return
+	}
+	h := block.Header.Height
+	if h == 0 || (h%100) != 0 {
+		return
+	}
+	if h <= d.lastCheckpointWritten {
+		return
+	}
+	if d.checkpointsFile == "" {
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(d.checkpointsFile), 0o755); err != nil {
+		log.Printf("Warning: failed to create checkpoints dir: %v", err)
+		return
+	}
+	f, err := os.OpenFile(d.checkpointsFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("Warning: failed to append checkpoint: %v", err)
+		return
+	}
+	defer f.Close()
+
+	hash := block.Hash()
+	line := fmt.Sprintf("%d:%s\n", h, strings.ToUpper(hex.EncodeToString(hash[:]))) // matches repo format examples
+	if _, err := io.WriteString(f, line); err != nil {
+		log.Printf("Warning: failed to write checkpoint: %v", err)
+		return
+	}
+	d.lastCheckpointWritten = h
 }
 
 // updateMempoolForAcceptedMainChain updates mempool contents for a newly

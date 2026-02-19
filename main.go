@@ -26,6 +26,8 @@ func main() {
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
 	noColor := flag.Bool("nocolor", false, "Disable colored output")
 	noVersionCheck := flag.Bool("no-version-check", false, "Disable remote version check on startup")
+	saveCheckpoints := flag.Bool("save-checkpoints", false, "Append a record to checkpoints.dat every 100 blocks (writes to data dir)")
+	fullSync := flag.Bool("full-sync", false, "Bypass checkpoints (download + verification) and sync naturally from peers")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
 	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
@@ -113,16 +115,18 @@ func main() {
 		seedNodes = append(seedNodes, flag.Args()...)
 	}
 	cfg := CLIConfig{
-		WalletFile:     *walletFile,
-		DataDir:        *dataDir,
-		ListenAddrs:    []string{*listen},
-		SeedNodes:      seedNodes,
-		RecoverMode:    *recover,
-		DaemonMode:     *daemonMode,
-		ExplorerAddr:   *explorerAddr,
-		APIAddr:        *apiAddr,
-		NoColor:        *noColor,
-		NoVersionCheck: *noVersionCheck,
+		WalletFile:      *walletFile,
+		DataDir:         *dataDir,
+		ListenAddrs:     []string{*listen},
+		SeedNodes:       seedNodes,
+		RecoverMode:     *recover,
+		DaemonMode:      *daemonMode,
+		ExplorerAddr:    *explorerAddr,
+		APIAddr:         *apiAddr,
+		NoColor:         *noColor,
+		NoVersionCheck:  *noVersionCheck,
+		SaveCheckpoints: *saveCheckpoints,
+		FullSync:        *fullSync,
 	}
 
 	cli, err := NewCLI(cfg)

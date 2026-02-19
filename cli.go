@@ -48,18 +48,20 @@ type CLI struct {
 
 // CLIConfig holds CLI configuration
 type CLIConfig struct {
-	WalletFile     string
-	DataDir        string
-	ListenAddrs    []string
-	SeedNodes      []string
-	Mining         bool
-	MineThreads    int
-	RecoverMode    bool   // If true, prompt for mnemonic to recover wallet
-	DaemonMode     bool   // If true, run headless (no interactive prompts)
-	ExplorerAddr   string // HTTP address for block explorer (empty = disabled)
-	APIAddr        string // API listen address (empty = disabled)
-	NoColor        bool   // If true, disable colored output
-	NoVersionCheck bool   // If true, skip remote version check on startup
+	WalletFile      string
+	DataDir         string
+	ListenAddrs     []string
+	SeedNodes       []string
+	Mining          bool
+	MineThreads     int
+	RecoverMode     bool   // If true, prompt for mnemonic to recover wallet
+	DaemonMode      bool   // If true, run headless (no interactive prompts)
+	ExplorerAddr    string // HTTP address for block explorer (empty = disabled)
+	APIAddr         string // API listen address (empty = disabled)
+	NoColor         bool   // If true, disable colored output
+	NoVersionCheck  bool   // If true, skip remote version check on startup
+	SaveCheckpoints bool   // If true, append checkpoints every 100 blocks
+	FullSync        bool   // If true, bypass checkpoints and verify chain naturally
 }
 
 // DefaultCLIConfig returns default CLI configuration
@@ -143,10 +145,12 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 
 	// Create daemon config (shared by both modes)
 	daemonCfg := DaemonConfig{
-		DataDir:      cfg.DataDir,
-		ListenAddrs:  cfg.ListenAddrs,
-		SeedNodes:    cfg.SeedNodes,
-		ExplorerAddr: cfg.ExplorerAddr,
+		DataDir:         cfg.DataDir,
+		ListenAddrs:     cfg.ListenAddrs,
+		SeedNodes:       cfg.SeedNodes,
+		ExplorerAddr:    cfg.ExplorerAddr,
+		SaveCheckpoints: cfg.SaveCheckpoints,
+		FullSync:        cfg.FullSync,
 	}
 
 	// Daemon mode: start without a wallet, user loads one via API

@@ -359,6 +359,17 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 		return fmt.Errorf("chain is nil")
 	}
 
+	extendsTip := false
+	if block != nil {
+		extendsTip = block.Header.PrevHash == chain.BestHash()
+	}
+	skipPoW := false
+	if block != nil {
+		chain.mu.RLock()
+		skipPoW = chain.shouldSkipPoWLocked(block.Header.Height, extendsTip)
+		chain.mu.RUnlock()
+	}
+
 	return validateBlockWithContext(
 		block,
 		chain.BestHash(),
@@ -366,6 +377,7 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 		chain.GetBlock,
 		chain.IsKeyImageSpent,
 		chain.IsCanonicalRingMember,
+		skipPoW,
 	)
 }
 
@@ -376,6 +388,7 @@ func validateBlockWithContext(
 	getParent func([32]byte) *Block,
 	isKeyImageSpent func([32]byte) bool,
 	isCanonicalRingMember RingMemberChecker,
+	skipPoW bool,
 ) error {
 	header := &block.Header
 
@@ -434,8 +447,10 @@ func validateBlockWithContext(
 		return fmt.Errorf("timestamp too far in future")
 	}
 
-	if !validatePoW(header) {
-		return fmt.Errorf("invalid proof of work")
+	if !skipPoW {
+		if !validatePoW(header) {
+			return fmt.Errorf("invalid proof of work")
+		}
 	}
 
 	if block.Size() > MaxBlockSize {
@@ -646,6 +661,216 @@ func (c *Chain) VerifyChain() []ChainViolation {
 	return violations
 }
 
+// VerifyChainWithCheckpoints verifies the chain starting from the first block
+// after a trusted checkpoint height. This is an optimization for startup: it
+// reduces the number of blocks we need to load and check while keeping the
+// same arithmetic-only validation (difficulty + timestamp rules) for the tail.
+//
+// If no checkpoint matches the local chain, it returns (nil, 0) and callers
+// should fall back to VerifyChain().
+func (c *Chain) VerifyChainWithCheckpoints(checkpoints map[uint64][32]byte, checkpointHeights []uint64) (violations []ChainViolation, usedCheckpointHeight uint64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	height := c.height
+	if height == 0 || len(checkpoints) == 0 {
+		return nil, 0
+	}
+
+	// Find the highest checkpoint that matches our stored chain.
+	// checkpointHeights is expected sorted ascending; scan backward.
+	for i := len(checkpointHeights) - 1; i >= 0; i-- {
+		h := checkpointHeights[i]
+		if h == 0 || h > height {
+			continue
+		}
+		want, ok := checkpoints[h]
+		if !ok {
+			continue
+		}
+		b := c.getBlockByHeightLocked(h)
+		if b == nil {
+			return []ChainViolation{{Height: h, Message: "checkpoint height missing from storage"}}, 0
+		}
+		if b.Hash() == want {
+			usedCheckpointHeight = h
+			break
+		}
+	}
+	if usedCheckpointHeight == 0 {
+		return nil, 0
+	}
+
+	startVerify := usedCheckpointHeight + 1
+	if startVerify > height {
+		return nil, usedCheckpointHeight
+	}
+
+	// We still need lookback history to compute LWMA and median timestamp rules.
+	needBack := uint64(11) // median window
+	if uint64(LWMAWindow+1) > needBack {
+		needBack = uint64(LWMAWindow + 1)
+	}
+
+	startLoad := uint64(0)
+	if startVerify > needBack {
+		startLoad = startVerify - needBack
+	}
+
+	// Load the required block range into memory.
+	blocks := make([]*Block, height-startLoad+1)
+	for h := startLoad; h <= height; h++ {
+		b := c.getBlockByHeightLocked(h)
+		if b == nil {
+			return []ChainViolation{{Height: h, Message: "block missing from storage"}}, usedCheckpointHeight
+		}
+		blocks[h-startLoad] = b
+	}
+
+	get := func(h uint64) *Block {
+		if h < startLoad || h > height {
+			return nil
+		}
+		return blocks[h-startLoad]
+	}
+
+	// Local LWMA calculator over the [startLoad..height] window.
+	computeLWMAFrom := func(parentHeight uint64) (uint64, bool) {
+		var weightedSolvetimeSum int64
+		var difficultySum uint64
+		weightSum := int64(LWMAWindow * (LWMAWindow + 1) / 2)
+
+		for i := 1; i <= LWMAWindow; i++ {
+			idx := parentHeight - uint64(LWMAWindow) + uint64(i)
+			cur := get(idx)
+			prev := get(idx - 1)
+			if cur == nil || prev == nil {
+				return 0, false
+			}
+			solvetime := cur.Header.Timestamp - prev.Header.Timestamp
+			if solvetime < LWMAMinSolvetime {
+				solvetime = LWMAMinSolvetime
+			}
+			if solvetime > LWMAMaxSolvetime {
+				solvetime = LWMAMaxSolvetime
+			}
+			weightedSolvetimeSum += solvetime * int64(i)
+			difficultySum += cur.Header.Difficulty
+		}
+
+		avgDifficulty := difficultySum / uint64(LWMAWindow)
+		expectedWeightedSum := int64(BlockIntervalSec) * weightSum
+		if weightedSolvetimeSum < 1 {
+			weightedSolvetimeSum = 1
+		}
+		newDiff := avgDifficulty * uint64(expectedWeightedSum) / uint64(weightedSolvetimeSum)
+		if newDiff < MinDifficulty {
+			newDiff = MinDifficulty
+		}
+		return newDiff, true
+	}
+
+	for h := startVerify; h <= height; h++ {
+		block := get(h)
+		prev := get(h - 1)
+		if block == nil || prev == nil {
+			return []ChainViolation{{Height: h, Message: "block missing from storage"}}, usedCheckpointHeight
+		}
+
+		// --- Difficulty check ---
+		var expectedDiff uint64
+		parentHeight := h - 1
+		if parentHeight < uint64(LWMAWindow) {
+			expectedDiff = MinDifficulty
+		} else {
+			d, ok := computeLWMAFrom(parentHeight)
+			if !ok {
+				return []ChainViolation{{Height: h, Message: "insufficient history for LWMA check"}}, usedCheckpointHeight
+			}
+			expectedDiff = d
+		}
+		if block.Header.Difficulty != expectedDiff {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("difficulty mismatch: stored %d, expected %d", block.Header.Difficulty, expectedDiff),
+			})
+		}
+
+		// --- Timestamp checks ---
+		medianCount := 11
+		if int(h) < medianCount {
+			medianCount = int(h)
+		}
+		timestamps := make([]int64, medianCount)
+		for i := 0; i < medianCount; i++ {
+			b := get(h - uint64(medianCount) + uint64(i))
+			if b == nil {
+				return []ChainViolation{{Height: h, Message: "insufficient history for median timestamp check"}}, usedCheckpointHeight
+			}
+			timestamps[i] = b.Header.Timestamp
+		}
+		for i := 0; i < len(timestamps); i++ {
+			for j := i + 1; j < len(timestamps); j++ {
+				if timestamps[i] > timestamps[j] {
+					timestamps[i], timestamps[j] = timestamps[j], timestamps[i]
+				}
+			}
+		}
+		median := timestamps[len(timestamps)/2]
+		if block.Header.Timestamp <= median {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("timestamp %d <= median %d", block.Header.Timestamp, median),
+			})
+		}
+
+		blockTime := block.Header.Timestamp - prev.Header.Timestamp
+		if blockTime < 1 {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("block time %ds (prev timestamp %d, this %d)", blockTime, prev.Header.Timestamp, block.Header.Timestamp),
+			})
+		}
+	}
+
+	return violations, usedCheckpointHeight
+}
+
+// SetTrustedCheckpoints configures the chain to use checkpoints for fast sync.
+// This is a trust-based optimization: blocks at checkpoint heights must match
+// the provided hash, and PoW verification may be skipped for tip-extensions up
+// to the last checkpoint height while the node is still below that height.
+func (c *Chain) SetTrustedCheckpoints(checkpoints map[uint64][32]byte, maxHeight uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(checkpoints) == 0 || maxHeight == 0 {
+		c.trustedCheckpoints = nil
+		c.fastSyncUntilHeight = 0
+		return
+	}
+	cp := make(map[uint64][32]byte, len(checkpoints))
+	for h, v := range checkpoints {
+		cp[h] = v
+	}
+	c.trustedCheckpoints = cp
+	c.fastSyncUntilHeight = maxHeight
+}
+
+func (c *Chain) shouldSkipPoWLocked(height uint64, extendsTip bool) bool {
+	if !extendsTip {
+		return false
+	}
+	if c.trustedCheckpoints == nil || c.fastSyncUntilHeight == 0 {
+		return false
+	}
+	// Only skip while we're still syncing up to the last checkpoint.
+	if c.height >= c.fastSyncUntilHeight {
+		return false
+	}
+	return height > 0 && height <= c.fastSyncUntilHeight
+}
+
 // computeLWMA replicates the LWMA difficulty calculation for a given height,
 // using a pre-loaded block slice. height must be >= LWMAWindow.
 func computeLWMA(blocks []*Block, height uint64) uint64 {
@@ -717,6 +942,13 @@ type Chain struct {
 	canonicalRingIndexDirty bool
 	canonicalRingIndexTip   [32]byte
 	canonicalRingIndexReady bool
+
+	// Trusted checkpoints are an optional performance optimization for initial
+	// sync: when enabled, we can skip expensive PoW verification for historical
+	// blocks up to the last checkpoint height, while still pinning consensus by
+	// requiring checkpoint-height hashes to match.
+	trustedCheckpoints  map[uint64][32]byte
+	fastSyncUntilHeight uint64
 }
 
 func chainProtectedBack() uint64 {
@@ -1271,6 +1503,25 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		isSpent = branchAwareSpent
 	}
 
+	// If checkpoints are enabled for fast sync, enforce checkpoint pinning.
+	// This ensures skipping PoW cannot be exploited to feed an alternate history.
+	if block != nil && c.trustedCheckpoints != nil && c.fastSyncUntilHeight > 0 && c.height < c.fastSyncUntilHeight {
+		if block.Header.Height <= c.fastSyncUntilHeight {
+			if want, ok := c.trustedCheckpoints[block.Header.Height]; ok {
+				have := block.Hash()
+				if have != want {
+					return fmt.Errorf("checkpoint mismatch at height %d: have %x want %x", block.Header.Height, have[:8], want[:8])
+				}
+			}
+		}
+	}
+
+	extendsTip := block != nil && block.Header.PrevHash == c.bestHash
+	skipPoW := false
+	if block != nil {
+		skipPoW = c.shouldSkipPoWLocked(block.Header.Height, extendsTip)
+	}
+
 	return validateBlockWithContext(
 		block,
 		c.bestHash,
@@ -1278,6 +1529,7 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		c.getBlockByHashLocked,
 		isSpent,
 		c.isCanonicalRingMemberLocked,
+		skipPoW,
 	)
 }
 

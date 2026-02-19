@@ -75,6 +75,8 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.uber.org/dig v1.19.0 // indirect
