@@ -176,10 +176,21 @@ func (s *APIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 
 	height := s.daemon.Chain().Height()
 	total, unspent := s.wallet.OutputCount()
+	pendingUnconfirmed := s.wallet.PendingUnconfirmedBalance()
+
+	// UX-only estimate: assume ~5 minute blocks and require next block + SafeConfirmations.
+	// (This mirrors the CLI behavior.)
+	etaSeconds := int64(0)
+	if pendingUnconfirmed > 0 {
+		eta := time.Duration(wallet.SafeConfirmations+1) * wallet.EstimatedBlockInterval
+		etaSeconds = int64(eta.Seconds())
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"spendable":                s.wallet.SpendableBalance(height),
 		"pending":                  s.wallet.PendingBalance(height),
+		"pending_unconfirmed":      pendingUnconfirmed,
+		"pending_unconfirmed_eta":  etaSeconds,
 		"total":                    s.wallet.Balance(),
 		"outputs_total":            total,
 		"outputs_unspent":          unspent,
@@ -410,6 +421,10 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		BlockHeight: height,
 		Memo:        memo,
 	})
+	if result.Change > 0 {
+		// UX: surface expected change immediately until it is confirmed/scanned.
+		s.wallet.AddPendingCredit(result.TxID, result.Change)
+	}
 	if err := s.wallet.Save(); err != nil {
 		log.Printf("Warning: wallet persistence failed after send %x: %v", result.TxID, err)
 	}

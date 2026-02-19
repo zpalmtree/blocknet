@@ -94,6 +94,7 @@ type WalletData struct {
 	Keys         StealthKeys    `json:"keys"`
 	Outputs      []*OwnedOutput `json:"outputs"`
 	SendHistory  []*SendRecord  `json:"send_history,omitempty"` // Track outgoing transactions
+	PendingCredits []*PendingCredit `json:"pending_credits,omitempty"` // UX-only pending credits (e.g. unconfirmed change)
 	SyncedHeight uint64         `json:"synced_height"`
 	CreatedAt    int64          `json:"created_at"`
 }
@@ -130,6 +131,15 @@ type Wallet struct {
 	deriveSpendKey          func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
 	deriveOutputSecret      func(txPub, viewPriv [32]byte) ([32]byte, error)
 	generateKeypairFromSeed func(seed [32]byte) (priv, pub [32]byte, err error)
+}
+
+// PendingCredit tracks a credit we expect to receive but haven't yet scanned
+// from a confirmed block (e.g. our own change output after broadcasting a tx).
+// Persisted in the wallet file for UX continuity across restarts.
+type PendingCredit struct {
+	TxID    [32]byte `json:"txid"`
+	Amount  uint64   `json:"amount"`
+	AddedAt int64    `json:"added_at"`
 }
 
 type reservedOutpoint struct {
@@ -384,6 +394,8 @@ func (w *Wallet) ViewPubKey() [32]byte {
 const (
 	CoinbaseMaturity  = 60 // Mined coins locked for 60 blocks
 	SafeConfirmations = 10 // Regular coins need 10 confirmations
+	// EstimatedBlockInterval is a UX-only approximation used for CLI ETA displays.
+	EstimatedBlockInterval = 5 * time.Minute
 )
 
 // IsOutputMature checks if an output is mature enough to spend
@@ -521,6 +533,65 @@ func (w *Wallet) AddOutput(out *OwnedOutput) {
 	}
 
 	w.data.Outputs = append(w.data.Outputs, out)
+
+	// If we were tracking an unconfirmed expected credit (e.g. change) and the
+	// scanner just found an output from that tx in a confirmed block, drop it.
+	if len(w.data.PendingCredits) > 0 {
+		kept := w.data.PendingCredits[:0]
+		for _, pc := range w.data.PendingCredits {
+			if pc == nil || pc.TxID == out.TxID {
+				continue
+			}
+			kept = append(kept, pc)
+		}
+		if len(kept) == 0 {
+			w.data.PendingCredits = nil
+		} else {
+			w.data.PendingCredits = kept
+		}
+	}
+}
+
+// AddPendingCredit records an expected credit that hasn't been confirmed/scanned yet.
+// This is used to surface "pending change" immediately after broadcasting a tx.
+func (w *Wallet) AddPendingCredit(txID [32]byte, amount uint64) {
+	if amount == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.data.PendingCredits == nil {
+		w.data.PendingCredits = make([]*PendingCredit, 0, 1)
+	}
+	// Replace existing entry for the same txid (if any).
+	for _, pc := range w.data.PendingCredits {
+		if pc != nil && pc.TxID == txID {
+			pc.Amount = amount
+			pc.AddedAt = time.Now().Unix()
+			return
+		}
+	}
+	w.data.PendingCredits = append(w.data.PendingCredits, &PendingCredit{
+		TxID:    txID,
+		Amount:  amount,
+		AddedAt: time.Now().Unix(),
+	})
+}
+
+// PendingUnconfirmedBalance returns the total amount we expect to receive but
+// haven't yet scanned from a confirmed block.
+func (w *Wallet) PendingUnconfirmedBalance() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var total uint64
+	for _, pc := range w.data.PendingCredits {
+		if pc == nil {
+			continue
+		}
+		total += pc.Amount
+	}
+	return total
 }
 
 // MarkSpent marks an output as spent by its one-time pubkey

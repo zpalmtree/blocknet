@@ -589,7 +589,7 @@
         "operationId": "getBalance",
         "tags": ["Wallet"],
         "summary": "Wallet balance",
-        "description": "Returns spendable, pending, and total balance in atomic units (1 BNT = 100,000,000 atomic units). Spendable excludes immature coinbase outputs. Requires unlocked wallet.",
+        "description": "Returns spendable, pending, and total confirmed balance in atomic units (1 BNT = 100,000,000 atomic units). Spendable excludes immature coinbase outputs. Also includes an optional UX-only `pending_unconfirmed` amount (typically change from your most recent send) plus an estimated unlock ETA in seconds, assuming ~5 minute blocks. Requires unlocked wallet.",
         "responses": {
           "200": {
             "description": "Balance breakdown",
@@ -601,6 +601,8 @@
                 "example": {
                   "spendable": 1250000000,
                   "pending": 72325093035,
+                  "pending_unconfirmed": 0,
+                  "pending_unconfirmed_eta": 0,
                   "total": 73575093035,
                   "outputs_total": 14,
                   "outputs_unspent": 9,
@@ -717,7 +719,7 @@
         "operationId": "sendFunds",
         "tags": ["Wallet"],
         "summary": "Send funds",
-        "description": "Builds a privacy-preserving transaction using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with ring size 11), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_fee, fee_per_byte * tx_size). Requires unlocked full wallet (not view-only).",
+        "description": "Builds a privacy-preserving transaction using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_fee, fee_per_byte * tx_size). Requires unlocked full wallet (not view-only).",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -1684,6 +1686,8 @@
         "properties": {
           "spendable": { "type": "integer", "description": "Mature, spendable balance in atomic units" },
           "pending": { "type": "integer", "description": "Immature coinbase outputs awaiting maturity (atomic units)" },
+          "pending_unconfirmed": { "type": "integer", "description": "Unconfirmed expected credits not yet scanned from a block (typically change from your most recent send). UX-only; not part of confirmed balance totals (atomic units)." },
+          "pending_unconfirmed_eta": { "type": "integer", "description": "Estimated seconds until `pending_unconfirmed` becomes spendable, assuming ~5 minute blocks and requiring next block + 10 confirmations. 0 when no pending_unconfirmed." },
           "total": { "type": "integer", "description": "Total unspent balance: spendable + pending (atomic units)" },
           "outputs_total": { "type": "integer", "description": "Total output count (including spent)" },
           "outputs_unspent": { "type": "integer", "description": "Currently unspent output count" },
@@ -1692,6 +1696,8 @@
         "example": {
           "spendable": 1250000000,
           "pending": 72325093035,
+          "pending_unconfirmed": 0,
+          "pending_unconfirmed_eta": 0,
           "total": 73575093035,
           "outputs_total": 14,
           "outputs_unspent": 9,

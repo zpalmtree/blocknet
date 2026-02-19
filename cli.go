@@ -559,10 +559,15 @@ func (c *CLI) cmdBalance() {
 	height := c.daemon.Chain().Height()
 	spendable := c.wallet.SpendableBalance(height)
 	pending := c.wallet.PendingBalance(height)
+	pendingUnconfirmed := c.wallet.PendingUnconfirmedBalance()
 	total, unspent := c.wallet.OutputCount()
 
 	fmt.Printf("  unlocked: %s\n", formatAmount(spendable))
 	fmt.Printf("  locked:   %s\n", formatAmount(pending))
+	if pendingUnconfirmed > 0 {
+		eta := time.Duration(wallet.SafeConfirmations+1) * wallet.EstimatedBlockInterval
+		fmt.Printf("  pending:  %s (est unlock ~%s)\n", formatAmount(pendingUnconfirmed), eta.Round(time.Minute))
+	}
 	fmt.Printf("  (%d unspent outputs", unspent)
 	if total > unspent {
 		fmt.Printf(", %d spent", total-unspent)
@@ -680,6 +685,14 @@ func (c *CLI) cmdSend(args []string) error {
 		BlockHeight: c.daemon.Chain().Height(),
 		Memo:        memo,
 	})
+	if result.Change > 0 {
+		// UX: surface expected change immediately until it is confirmed/scanned.
+		c.wallet.AddPendingCredit(result.TxID, result.Change)
+	}
+	if err := c.wallet.Save(); err != nil {
+		// Don't fail the send after broadcast; just warn about persistence.
+		fmt.Printf("Warning: wallet persistence failed after send %x: %v\n", result.TxID, err)
+	}
 
 	fmt.Printf("Transaction sent: %x\n", result.TxID[:16])
 	fmt.Printf("  Fee: %s\n", formatAmount(result.Fee))
