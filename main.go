@@ -11,10 +11,11 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.4.1"
+const Version = "0.5.0"
 
 func main() {
 	// Parse command line flags
+	version := flag.Bool("version", false, "Print version and exit")
 	walletFile := flag.String("wallet", DefaultWalletFilename, "Path to wallet file")
 	dataDir := flag.String("data", DefaultDataDir, "Data directory")
 	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
@@ -24,12 +25,18 @@ func main() {
 	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
 	noColor := flag.Bool("nocolor", false, "Disable colored output")
+	noVersionCheck := flag.Bool("no-version-check", false, "Disable remote version check on startup")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
 	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
 	viewPrivDeprecated := flag.String("view-priv", "", "DEPRECATED (insecure): do not pass view private key via CLI; use --view-priv-env/BLOCKNET_VIEW_PRIV")
 	viewPrivEnv := flag.String("view-priv-env", "BLOCKNET_VIEW_PRIV", "Environment variable name containing view private key (hex) for view-only wallet")
 	flag.Parse()
+
+	if *version {
+		fmt.Println(Version)
+		return
+	}
 
 	// Quarantine well-known legacy default paths before any init work.
 	// This is intentionally conservative: it only quarantines legacy defaults
@@ -114,7 +121,8 @@ func main() {
 		DaemonMode:   *daemonMode,
 		ExplorerAddr: *explorerAddr,
 		APIAddr:      *apiAddr,
-		NoColor:      *noColor,
+		NoColor:        *noColor,
+		NoVersionCheck: *noVersionCheck,
 	}
 
 	cli, err := NewCLI(cfg)

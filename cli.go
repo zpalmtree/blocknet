@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
@@ -36,6 +38,7 @@ type CLI struct {
 	startTime       time.Time
 	daemonMode      bool
 	noColor         bool
+	noVersionCheck  bool
 	api             *APIServer
 	apiAddr         string
 	dataDir         string
@@ -45,17 +48,18 @@ type CLI struct {
 
 // CLIConfig holds CLI configuration
 type CLIConfig struct {
-	WalletFile   string
-	DataDir      string
-	ListenAddrs  []string
-	SeedNodes    []string
-	Mining       bool
-	MineThreads  int
-	RecoverMode  bool   // If true, prompt for mnemonic to recover wallet
-	DaemonMode   bool   // If true, run headless (no interactive prompts)
-	ExplorerAddr string // HTTP address for block explorer (empty = disabled)
-	APIAddr      string // API listen address (empty = disabled)
-	NoColor      bool   // If true, disable colored output
+	WalletFile     string
+	DataDir        string
+	ListenAddrs    []string
+	SeedNodes      []string
+	Mining         bool
+	MineThreads    int
+	RecoverMode    bool   // If true, prompt for mnemonic to recover wallet
+	DaemonMode     bool   // If true, run headless (no interactive prompts)
+	ExplorerAddr   string // HTTP address for block explorer (empty = disabled)
+	APIAddr        string // API listen address (empty = disabled)
+	NoColor        bool   // If true, disable colored output
+	NoVersionCheck bool   // If true, skip remote version check on startup
 }
 
 // DefaultCLIConfig returns default CLI configuration
@@ -126,14 +130,15 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cli := &CLI{
-		ctx:        ctx,
-		cancel:     cancel,
-		reader:     bufio.NewReader(os.Stdin),
-		startTime:  time.Now(),
-		daemonMode: cfg.DaemonMode,
-		noColor:    cfg.NoColor,
-		dataDir:    cfg.DataDir,
-		walletFile: cfg.WalletFile,
+		ctx:            ctx,
+		cancel:         cancel,
+		reader:         bufio.NewReader(os.Stdin),
+		startTime:      time.Now(),
+		daemonMode:     cfg.DaemonMode,
+		noColor:        cfg.NoColor,
+		noVersionCheck: cfg.NoVersionCheck,
+		dataDir:        cfg.DataDir,
+		walletFile:     cfg.WalletFile,
 	}
 
 	// Create daemon config (shared by both modes)
@@ -333,8 +338,26 @@ func (c *CLI) Run() error {
 		return c.shutdown()
 	}
 
+	// Kick off version check concurrently with welcome animation
+	versionNoticeCh := make(chan string, 1)
+	if !c.noVersionCheck {
+		go func() {
+			if latest, err := fetchLatestVersion(); err == nil && isNewerVersion(latest, Version) {
+				versionNoticeCh <- latest
+			}
+		}()
+		go c.periodicVersionCheck()
+	}
+
 	// Print welcome
 	c.printWelcome()
+
+	// Print update notice if the check finished in time
+	select {
+	case latest := <-versionNoticeCh:
+		c.printUpdateNotice(latest)
+	default:
+	}
 
 	// Main command loop
 	for {
@@ -408,11 +431,85 @@ func (c *CLI) printWelcome() {
 	}
 
 	fmt.Println()
-	fmt.Printf("  Address: %s...\n", c.wallet.Address()[:24])
+	fmt.Printf("  Address: %s\n", c.wallet.Address())
 	fmt.Printf("  Balance: %s\n", balanceStr)
 	fmt.Printf("  Height:  %d\n", height)
 	fmt.Println()
 	fmt.Println("Type 'help' for available commands")
+}
+
+func fetchLatestVersion() (string, error) {
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/blocknetprivacy/blocknet/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(release.TagName, "v"), nil
+}
+
+func parseVersionParts(v string) [3]int {
+	var parts [3]int
+	for i, s := range strings.SplitN(v, ".", 3) {
+		parts[i], _ = strconv.Atoi(s)
+	}
+	return parts
+}
+
+func isNewerVersion(latest, current string) bool {
+	l := parseVersionParts(latest)
+	c := parseVersionParts(current)
+	for i := range l {
+		if l[i] > c[i] {
+			return true
+		}
+		if l[i] < c[i] {
+			return false
+		}
+	}
+	return false
+}
+
+func (c *CLI) periodicVersionCheck() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			if latest, err := fetchLatestVersion(); err == nil && isNewerVersion(latest, Version) {
+				c.printUpdateNotice(latest)
+			}
+		}
+	}
+}
+
+func (c *CLI) printUpdateNotice(latest string) {
+	yellow := "\033[33m"
+	bold := "\033[1m"
+	reset := "\033[0m"
+	if c.noColor {
+		yellow, bold, reset = "", "", ""
+	}
+	fmt.Printf("%s%s  ⚠ Update available: v%s (you have v%s)%s\n", bold, yellow, latest, Version, reset)
+	fmt.Printf("%s  Your node may stop communicating with the network soon.%s\n", yellow, reset)
+	fmt.Printf("%s  Download: https://github.com/blocknetprivacy/blocknet/releases/latest%s\n", yellow, reset)
+	fmt.Println()
 }
 
 func (c *CLI) executeCommand(line string) error {
@@ -432,15 +529,17 @@ func (c *CLI) executeCommand(line string) error {
 	switch cmd {
 	case "help", "?":
 		c.cmdHelp()
+	case "version":
+		c.cmdVersion()
 	case "status":
 		c.cmdStatus()
-	case "balance", "bal":
+	case "balance", "bal", "b":
 		c.cmdBalance()
-	case "address", "addr":
+	case "address", "addr", "a":
 		c.cmdAddress()
 	case "send":
 		return c.cmdSend(args)
-	case "history", "hist":
+	case "history", "hist", "h":
 		c.cmdHistory()
 	case "peers":
 		c.cmdPeers()
@@ -450,7 +549,7 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdExportPeer()
 	case "mining":
 		return c.cmdMining(args)
-	case "sync":
+	case "sync", "scan":
 		c.cmdSync()
 	case "seed":
 		return c.cmdSeed()
@@ -466,13 +565,17 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdPurgeData()
 	case "verify":
 		c.cmdVerify()
-	case "quit", "exit":
+	case "quit", "exit", "q":
 		return fmt.Errorf("quit")
 	default:
 		return fmt.Errorf("unknown command: %s (type 'help' for commands)", cmd)
 	}
 
 	return nil
+}
+
+func (c *CLI) cmdVersion() {
+	fmt.Println(Version)
 }
 
 func (c *CLI) cmdHelp() {
@@ -500,6 +603,7 @@ Commands:%s
   save              Save wallet to disk
   verify            Check chain integrity (difficulty + timestamps)
   purge             Delete all blockchain data (cannot be undone)
+  version           Print version
   quit              Exit (saves automatically)
 `, viewOnlyNote, func() string {
 		if c.wallet.IsViewOnly() {
@@ -646,27 +750,9 @@ func (c *CLI) cmdSend(args []string) error {
 			formatAmount(spendable), formatAmount(amount))
 	}
 
-	// Confirm
-	fmt.Printf("\nSend %s to %s...?\n", formatAmount(amount), recipientAddr[:24])
-	if len(memo) > 0 {
-		if memoText, ok := memoTextIfPrintable(memo); ok {
-			fmt.Printf("with memo str: %s\n", strconv.QuoteToASCII(memoText))
-		} else {
-			fmt.Printf("with memo hex: %s\n", strings.ToUpper(hex.EncodeToString(memo)))
-		}
-	}
-	fmt.Print("Confirm [y/N]: ")
-
-	confirm, _ := c.reader.ReadString('\n')
-	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-		fmt.Println("Cancelled")
-		return nil
-	}
-
-	// Build and send transaction
+	// Build transaction first so we can show the fee in the confirmation prompt
 	fmt.Printf("\nBuilding transaction...\n")
 
-	// Build transaction using wallet and daemon
 	recipient := wallet.Recipient{
 		SpendPubKey: spendPub,
 		ViewPubKey:  viewPub,
@@ -679,6 +765,32 @@ func (c *CLI) cmdSend(args []string) error {
 	result, err := builder.Transfer([]wallet.Recipient{recipient}, 10, chainHeight)
 	if err != nil {
 		return fmt.Errorf("failed to build transaction: %w", err)
+	}
+
+	// Confirm
+	fmt.Printf("\nSend %s to %s?\n", formatAmount(amount), recipientAddr)
+	fmt.Printf("  Fee:    %s\n", formatAmount(result.Fee))
+	if result.Change > 0 {
+		blocksUntilSpendable := uint64(wallet.SafeConfirmations + 1)
+		arrivalBlock := chainHeight + blocksUntilSpendable
+		eta := time.Duration(blocksUntilSpendable) * wallet.EstimatedBlockInterval
+		fmt.Printf("  Change: %s — spendable in ~%d blocks (block %d, ~%s from now)\n",
+			formatAmount(result.Change), blocksUntilSpendable, arrivalBlock, formatDuration(eta))
+	}
+	if len(memo) > 0 {
+		if memoText, ok := memoTextIfPrintable(memo); ok {
+			fmt.Printf("  Memo:   %s\n", strconv.QuoteToASCII(memoText))
+		} else {
+			fmt.Printf("  Memo:   %s\n", strings.ToUpper(hex.EncodeToString(memo)))
+		}
+	}
+	fmt.Print("Confirm [y/N]: ")
+
+	confirm, _ := c.reader.ReadString('\n')
+	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+		c.wallet.ReleaseInputLease(result.InputLease)
+		fmt.Println("Cancelled")
+		return nil
 	}
 
 	// Submit to mempool via Dandelion++
@@ -711,11 +823,7 @@ func (c *CLI) cmdSend(args []string) error {
 		fmt.Printf("Warning: wallet persistence failed after send %x: %v\n", result.TxID, err)
 	}
 
-	fmt.Printf("Transaction sent: %x\n", result.TxID[:16])
-	fmt.Printf("  Fee: %s\n", formatAmount(result.Fee))
-	if result.Change > 0 {
-		fmt.Printf("  Change: %s\n", formatAmount(result.Change))
-	}
+	fmt.Printf("Transaction sent: %x\n", result.TxID)
 
 	return nil
 }
@@ -733,11 +841,13 @@ func (c *CLI) cmdHistory() {
 	// Color codes
 	green := "\033[38;2;170;255;0m" // #AAFF00 - incoming
 	red := "\033[38;2;255;68;68m"   // #FF4444 - outgoing
+	dim := "\033[2;33m"             // dim yellow - pending
 	reset := "\033[0m"
 
 	if c.noColor {
 		green = ""
 		red = ""
+		dim = ""
 		reset = ""
 	}
 
@@ -750,6 +860,7 @@ func (c *CLI) cmdHistory() {
 		color     string
 		txHash    [32]byte
 		memo      []byte
+		pending   bool
 	}
 
 	var events []historyEvent
@@ -780,6 +891,8 @@ func (c *CLI) cmdHistory() {
 			continue
 		}
 
+		pending := sendRecord.BlockHeight == 0
+
 		// Prefer chain timestamp when the block is available, otherwise fall back
 		// to the local timestamp captured at send time.
 		ts := sendRecord.Timestamp
@@ -789,14 +902,20 @@ func (c *CLI) cmdHistory() {
 			}
 		}
 
+		color := red
+		if pending {
+			color = dim
+		}
+
 		events = append(events, historyEvent{
 			timestamp: ts,
 			direction: "OUT",
 			amount:    sendRecord.Amount,
 			height:    sendRecord.BlockHeight,
-			color:     red,
+			color:     color,
 			txHash:    sendRecord.TxID,
 			memo:      sendRecord.Memo,
+			pending:   pending,
 		})
 		seenTxIDs[sendRecord.TxID] = true
 	}
@@ -816,6 +935,11 @@ func (c *CLI) cmdHistory() {
 			amountStr = "??? BNT"
 		}
 
+		pendingTag := ""
+		if evt.pending {
+			pendingTag = " [mempool]"
+		}
+
 		memoStr := ""
 		if len(evt.memo) > 0 {
 			memoHex := hex.EncodeToString(evt.memo)
@@ -826,13 +950,14 @@ func (c *CLI) cmdHistory() {
 			}
 		}
 
-		fmt.Printf("%s %s%-3s%s %-16s %x%s\n",
+		fmt.Printf("%s %s%-3s%s %-16s %x%s%s\n",
 			dateStr,
 			evt.color,
 			evt.direction,
 			reset,
 			amountStr,
 			evt.txHash,
+			pendingTag,
 			memoStr,
 		)
 	}
@@ -898,8 +1023,8 @@ func (c *CLI) cmdBanned() {
 			remaining := time.Until(ban.ExpiresAt).Round(time.Minute)
 			durStr = fmt.Sprintf("expires in %s", remaining)
 		}
-		fmt.Printf("  %s...\n    Reason: %s\n    Banned: %dx, %s\n",
-			ban.PeerID.String()[:16],
+		fmt.Printf("  %s\n    Reason: %s\n    Banned: %dx, %s\n",
+			ban.PeerID.String(),
 			ban.Reason,
 			ban.BanCount,
 			durStr,
@@ -1379,8 +1504,8 @@ func (c *CLI) createTxBuilder() *wallet.Builder {
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,
-		MinFee:      1000,  // 0.00001 BNT minimum
-		FeePerByte:  10,    // 0.0000001 BNT per byte
+		MinFee:      1000, // 0.00001 BNT minimum
+		FeePerByte:  10,   // 0.0000001 BNT per byte
 	}
 
 	return wallet.NewBuilder(c.wallet, cfg)
@@ -1482,6 +1607,17 @@ func blockToScanData(block *Block) *wallet.BlockData {
 	}
 
 	return data
+}
+
+// formatDuration renders a duration as "Xh Ym" or "Ym" for UX ETA strings.
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Minute)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	return fmt.Sprintf("%dm", m)
 }
 
 // sanitizeInput removes control characters from user input (fixes tmux copy-paste issues)
