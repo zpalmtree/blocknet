@@ -591,7 +591,7 @@ Commands:%s
   mining start|stop|threads Control mining
   sync              Rescan blocks for outputs
   seed              Show wallet recovery seed (careful!)
-  viewkeys          Export view-only wallet keys
+  viewkeys          Create a view-only wallet file
   lock              Lock wallet
   unlock            Unlock wallet
   save              Save wallet to disk
@@ -994,7 +994,7 @@ func (c *CLI) cmdPeers() {
 	} else {
 		fmt.Printf("\nConnected peers (%d):\n", len(peers))
 		for _, p := range peers {
-			fmt.Printf("  %s\n", p.String()[:32]+"...")
+			fmt.Printf("  %s\n", p.String())
 		}
 	}
 
@@ -1173,7 +1173,7 @@ func (c *CLI) cmdSeed() error {
 		for j := i; j < end; j++ {
 			row += fmt.Sprintf("%2d.%-10s ", j+1, words[j])
 		}
-		fmt.Printf("║  %s║\n", fmt.Sprintf("%-52s", row))
+		fmt.Printf("%s\n", fmt.Sprintf("%-52s", row))
 	}
 
 	fmt.Println("╚══════════════════════════════════════════════════════╝")
@@ -1183,38 +1183,57 @@ func (c *CLI) cmdSeed() error {
 	return nil
 }
 
+func (c *CLI) viewWalletFilename() string {
+	name := c.walletFile
+	if strings.HasSuffix(name, ".wallet.dat") {
+		return strings.TrimSuffix(name, ".wallet.dat") + ".view.wallet.dat"
+	}
+	ext := ""
+	if dot := strings.LastIndex(name, "."); dot >= 0 {
+		ext = name[dot:]
+		name = name[:dot]
+	}
+	return name + ".view" + ext
+}
+
 func (c *CLI) cmdViewKeys() error {
 	if c.wallet.IsViewOnly() {
 		return fmt.Errorf("this is already a view-only wallet")
 	}
 
-	fmt.Println("\nWARNING: View-only keys allow monitoring all incoming funds!")
-	fmt.Println("Anyone with these keys can see your balance and transaction history.")
-	fmt.Println("They CANNOT spend your funds.")
-	fmt.Print("\nExport view-only keys? [y/N]: ")
+	viewFile := c.viewWalletFilename()
+
+	fmt.Println("\nThis will create a view-only wallet that can monitor incoming")
+	fmt.Println("funds but CANNOT spend. Anyone with this file can see your")
+	fmt.Println("balance and transaction history.")
+	fmt.Printf("\nFile: %s\n", viewFile)
+
+	if fileExists(viewFile) {
+		fmt.Print("\nFile already exists. Overwrite? [y/N]: ")
+	} else {
+		fmt.Print("\nCreate view-only wallet? [y/N]: ")
+	}
 
 	confirm, _ := c.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 		return nil
 	}
 
+	password, err := c.promptNewPassword()
+	if err != nil {
+		return err
+	}
+	defer wipeBytes(password)
+
 	keys := c.wallet.ExportViewOnlyKeys()
+	_, err = wallet.NewViewOnlyWallet(viewFile, password, keys, defaultWalletConfig())
+	if err != nil {
+		return fmt.Errorf("failed to create view-only wallet: %w", err)
+	}
 
-	fmt.Println("\n╔══════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                     VIEW-ONLY WALLET KEYS                            ║")
-	fmt.Println("╠══════════════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Spend Public Key:                                                   ║\n")
-	fmt.Printf("║    %x  ║\n", keys.SpendPubKey)
-	fmt.Printf("║  View Private Key:                                                   ║\n")
-	fmt.Printf("║    %x  ║\n", keys.ViewPrivKey)
-	fmt.Printf("║  View Public Key:                                                    ║\n")
-	fmt.Printf("║    %x  ║\n", keys.ViewPubKey)
-	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
-
-	fmt.Println("\nTo create a view-only wallet, run:")
-	fmt.Println("  BLOCKNET_VIEW_PRIV=<view_priv_hex> blocknet --viewonly --spend-pub <spend_pub_hex>")
-	fmt.Println("\nOr copy these keys to a file and import with:")
-	fmt.Println("  blocknet --import-viewonly <keyfile>")
+	fmt.Printf("\nView-only wallet saved to %s\n", viewFile)
+	fmt.Println("Load it with:")
+	fmt.Printf("  blocknet --wallet %s\n", viewFile)
 
 	return nil
 }
