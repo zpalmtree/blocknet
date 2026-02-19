@@ -817,7 +817,7 @@ func (c *CLI) cmdSend(args []string) error {
 		fmt.Printf("Warning: wallet persistence failed after send %x: %v\n", result.TxID, err)
 	}
 
-	fmt.Printf("Transaction sent: %s\nExplorer: https://explorer.blocknet.org/tx/%s\n", fmt.Sprintf("%x", result.TxID), fmt.Sprintf("%x", result.TxID))
+	fmt.Printf("Transaction sent: %s\nExplorer: https://explorer.blocknetprivacy.com/tx/%s\n", fmt.Sprintf("%x", result.TxID), fmt.Sprintf("%x", result.TxID))
 
 	return nil
 }
