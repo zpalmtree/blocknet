@@ -113,14 +113,14 @@ func main() {
 		seedNodes = append(seedNodes, flag.Args()...)
 	}
 	cfg := CLIConfig{
-		WalletFile:   *walletFile,
-		DataDir:      *dataDir,
-		ListenAddrs:  []string{*listen},
-		SeedNodes:    seedNodes,
-		RecoverMode:  *recover,
-		DaemonMode:   *daemonMode,
-		ExplorerAddr: *explorerAddr,
-		APIAddr:      *apiAddr,
+		WalletFile:     *walletFile,
+		DataDir:        *dataDir,
+		ListenAddrs:    []string{*listen},
+		SeedNodes:      seedNodes,
+		RecoverMode:    *recover,
+		DaemonMode:     *daemonMode,
+		ExplorerAddr:   *explorerAddr,
+		APIAddr:        *apiAddr,
 		NoColor:        *noColor,
 		NoVersionCheck: *noVersionCheck,
 	}

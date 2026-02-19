@@ -5,8 +5,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -338,25 +338,16 @@ func (c *CLI) Run() error {
 		return c.shutdown()
 	}
 
-	// Kick off version check concurrently with welcome animation
-	versionNoticeCh := make(chan string, 1)
-	if !c.noVersionCheck {
-		go func() {
-			if latest, err := fetchLatestVersion(); err == nil && isNewerVersion(latest, Version) {
-				versionNoticeCh <- latest
-			}
-		}()
-		go c.periodicVersionCheck()
-	}
-
 	// Print welcome
 	c.printWelcome()
 
-	// Print update notice if the check finished in time
-	select {
-	case latest := <-versionNoticeCh:
-		c.printUpdateNotice(latest)
-	default:
+	if !c.noVersionCheck {
+		go func() {
+			if latest, err := fetchLatestVersion(); err == nil && isNewerVersion(latest, Version) {
+				c.printUpdateNotice(latest)
+			}
+		}()
+		go c.periodicVersionCheck()
 	}
 
 	// Main command loop
@@ -440,12 +431,7 @@ func (c *CLI) printWelcome() {
 
 func fetchLatestVersion() (string, error) {
 	client := &http.Client{Timeout: 8 * time.Second}
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/blocknetprivacy/blocknet/releases/latest", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	resp, err := client.Do(req)
+	resp, err := client.Get("https://raw.githubusercontent.com/blocknetprivacy/blocknet/refs/heads/master/main.go")
 	if err != nil {
 		return "", err
 	}
@@ -453,13 +439,21 @@ func fetchLatestVersion() (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimPrefix(release.TagName, "v"), nil
+	// Extract: const Version = "x.y.z"
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "const Version") {
+			parts := strings.SplitN(line, `"`, 3)
+			if len(parts) == 3 {
+				return parts[1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("version not found in remote main.go")
 }
 
 func parseVersionParts(v string) [3]int {
