@@ -564,12 +564,14 @@ func (c *CLI) cmdBalance() {
 	pendingUnconfirmed := c.wallet.PendingUnconfirmedBalance()
 	total, unspent := c.wallet.OutputCount()
 
-	fmt.Printf("  unlocked: %s\n", formatAmount(spendable))
-	fmt.Printf("  locked:   %s\n", formatAmount(pending))
+	fmt.Printf("  spendable:  %s\n", formatAmount(spendable))
+	fmt.Printf("  confirming: %s\n", formatAmount(pending))
 	if pendingUnconfirmed > 0 {
 		eta := time.Duration(wallet.SafeConfirmations+1) * wallet.EstimatedBlockInterval
-		fmt.Printf("  pending:  %s (est unlock ~%s)\n", formatAmount(pendingUnconfirmed), eta.Round(time.Minute))
+		fmt.Printf("  pending:    %s (est unlock ~%s)\n", formatAmount(pendingUnconfirmed), eta.Round(time.Minute))
 	}
+	fmt.Printf("Note: When you spend coins, the change can take a moment to return to your wallet.\n")
+
 	fmt.Printf("  (%d unspent outputs", unspent)
 	if total > unspent {
 		fmt.Printf(", %d spent", total-unspent)
@@ -674,7 +676,7 @@ func (c *CLI) cmdSend(args []string) error {
 
 	builder := c.createTxBuilder()
 	chainHeight := c.daemon.Chain().Height()
-	result, err := builder.Transfer([]wallet.Recipient{recipient}, 1000, chainHeight) // 1000 atomic = 0.00001 BNT fee rate
+	result, err := builder.Transfer([]wallet.Recipient{recipient}, 10, chainHeight)
 	if err != nil {
 		return fmt.Errorf("failed to build transaction: %w", err)
 	}
@@ -818,9 +820,9 @@ func (c *CLI) cmdHistory() {
 		if len(evt.memo) > 0 {
 			memoHex := hex.EncodeToString(evt.memo)
 			if memoText, ok := memoTextIfPrintable(evt.memo); ok {
-				memoStr = " memo:" + strconv.QuoteToASCII(memoText) + " hex:" + memoHex
+				memoStr = "\n - memo:" + strconv.QuoteToASCII(memoText)
 			} else {
-				memoStr = " memo:hex:" + memoHex
+				memoStr = "\n - memo hex:" + memoHex
 			}
 		}
 
@@ -1377,8 +1379,8 @@ func (c *CLI) createTxBuilder() *wallet.Builder {
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,
-		MinFee:      10000, // 0.0001 BNT minimum
-		FeePerByte:  100,   // 0.000001 BNT per byte
+		MinFee:      1000,  // 0.00001 BNT minimum
+		FeePerByte:  10,    // 0.0000001 BNT per byte
 	}
 
 	return wallet.NewBuilder(c.wallet, cfg)

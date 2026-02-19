@@ -276,8 +276,8 @@ func (e *Explorer) buildStatsSnapshot() explorerStatsSnapshot {
 		Hashrate:     fmt.Sprintf("%.2f", hashrate),
 		AvgBlockTime: fmt.Sprintf("%.0f", avgBt),
 		TotalTx:      totalTx,
-		Emitted:      fmt.Sprintf("%.2f", float64(emitted)/100_000_000),
-		Remaining:    fmt.Sprintf("%.2f", float64(remaining)/100_000_000),
+		Emitted:      fmtAmountComma(emitted),
+		Remaining:    fmtAmountComma(remaining),
 		PctEmitted:   fmt.Sprintf("%.4f", pctEmitted),
 		Peers: func() int {
 			if e.daemon == nil || e.daemon.node == nil {
@@ -285,9 +285,9 @@ func (e *Explorer) buildStatsSnapshot() explorerStatsSnapshot {
 			}
 			return len(e.daemon.node.Peers())
 		}(),
-		DataJSON:     template.JS(jsonData),
-		GenesisTs:    genesisTs,
-		ComputedAt:   time.Now(),
+		DataJSON:   template.JS(jsonData),
+		GenesisTs:  genesisTs,
+		ComputedAt: time.Now(),
 	}
 }
 
@@ -373,8 +373,8 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"Height":      height,
-		"Difficulty":  chain.NextDifficulty(),
+		"Height":     height,
+		"Difficulty": chain.NextDifficulty(),
 		"Peers": func() int {
 			if e.daemon == nil || e.daemon.node == nil {
 				return 0
@@ -382,8 +382,8 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 			return len(e.daemon.node.Peers())
 		}(),
 		"Hashrate":    fmt.Sprintf("%.2f", hashrate),
-		"Emitted":     float64(emitted) / 100_000_000,
-		"Remaining":   float64(remaining) / 100_000_000,
+		"Emitted":     fmtAmountComma(emitted),
+		"Remaining":   fmtAmountComma(remaining),
 		"PctEmitted":  fmt.Sprintf("%.4f", pctEmitted),
 		"TailStarted": pctEmitted >= 100,
 		"MempoolTxs":  mempoolTxs,
@@ -531,7 +531,7 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Hash":        fmt.Sprintf("%x", txID),
 		"IsCoinbase":  isCoinbase,
-		"Fee":         float64(tx.Fee) / 1e9,
+		"Fee":         float64(tx.Fee) / 100_000_000,
 		"TxPubKey":    fmt.Sprintf("%x", tx.TxPublicKey),
 		"InputCount":  len(tx.Inputs),
 		"OutputCount": len(tx.Outputs),
@@ -645,6 +645,23 @@ func timeAgo(timestamp int64) string {
 	return fmt.Sprintf("%dd ago", diff/86400)
 }
 
+func fmtAmountComma(satoshis uint64) string {
+	whole := satoshis / 100_000_000
+	frac := satoshis % 100_000_000
+	s := fmt.Sprintf("%d", whole)
+	if len(s) > 3 {
+		var buf []byte
+		for i, c := range s {
+			if i > 0 && (len(s)-i)%3 == 0 {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, byte(c))
+		}
+		s = string(buf)
+	}
+	return fmt.Sprintf("%s.%02d", s, frac/1_000_000)
+}
+
 func renderTemplate(w http.ResponseWriter, tmplStr string, data interface{}) {
 	tmpl, err := template.New("page").Parse(tmplStr)
 	if err != nil {
@@ -659,7 +676,7 @@ func renderTemplate(w http.ResponseWriter, tmplStr string, data interface{}) {
 
 // Base CSS matches website exactly, with explorer-specific additions
 const explorerCSS = `*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a0a;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:32px;max-width:800px;margin:0 auto}
+body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:32px;max-width:800px;margin:0 auto}
 a{color:#af0}
 a:hover{color:#cf3}
 h1,h2{color:#eee;font-weight:normal;margin:48px 0 16px}
@@ -668,7 +685,7 @@ h2{font-size:18px;border-bottom:1px dashed #333;padding-bottom:8px}
 p{margin:16px 0}
 .g{color:#af0}
 .d{color:#555}
-.box{border:1px solid #333;padding:20px;margin:24px 0;background:#0d0d0d}
+.box{border:1px solid #333;padding:20px;margin:24px 0;background:#000}
 .stats{display:flex;justify-content:space-between}
 .spec{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1a1a1a}
 .spec:last-child{border:0}
@@ -684,7 +701,7 @@ th{color:#666;font-weight:normal;font-size:13px;text-transform:uppercase}
 tr:hover{background:#111}
 .hash{color:#666;font-size:13px}
 .search{display:flex;gap:8px;margin:24px 0}
-.search input{flex:1;background:#111;border:1px solid #333;color:#eee;padding:12px;font:inherit}
+.search input{flex:1;background:#000;border:1px solid #333;color:#eee;padding:12px;font:inherit}
 .search input:focus{outline:none;border-color:#af0}
 .search button{background:#af0;border:0;color:#000;padding:12px 24px;cursor:pointer;font:inherit}
 .search button:hover{background:#cf3}
@@ -734,8 +751,8 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 
 <h2><span class="g">#</span> supply</h2>
 <div class="box stats">
-<div class="stat"><div class="stat-v">{{printf "%.2f" .Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
-<div class="stat"><div class="stat-v">{{printf "%.2f" .Remaining}}</div><div class="stat-k">Remaining (pre-tail)</div></div>
+<div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
+<div class="stat"><div class="stat-v">{{.Remaining}}</div><div class="stat-k">Remaining (pre-tail)</div></div>
 <div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
 {{if .TailStarted}}<div class="stat"><div class="stat-v" style="color:#af0">Active</div><div class="stat-k">Tail Emission</div></div>{{end}}
 </div>
@@ -1093,19 +1110,41 @@ ctx.restore();
 if(opts.refLabel){ctx.fillStyle='#666';ctx.textAlign='left';ctx.fillText(opts.refLabel,pad.l+4,ry-6);}
 }
 
-// line + fill
-ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();
-for(var i=0;i<pts.length;i++){
-var x=sx(pts[i].x),y=sy(pts[i].y);
-i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+// line + fill (supports splitAt to change color mid-line)
+var spIdx=-1,sc=color;
+if(opts.splitAt!==undefined){
+sc=opts.splitColor?xhex(opts.splitColor):'#555';
+for(var i=pts.length-1;i>=0;i--){if(pts[i].x<=opts.splitAt){spIdx=i;break;}}
 }
+if(spIdx>=0&&spIdx<pts.length-1){
+ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();
+for(var i=0;i<=spIdx;i++){var x=sx(pts[i].x),y=sy(pts[i].y);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+ctx.stroke();
+ctx.beginPath();ctx.moveTo(sx(pts[0].x),sy(pts[0].y));
+for(var i=1;i<=spIdx;i++)ctx.lineTo(sx(pts[i].x),sy(pts[i].y));
+ctx.lineTo(sx(pts[spIdx].x),pad.t+ph);ctx.lineTo(sx(pts[0].x),pad.t+ph);ctx.closePath();
+var g1=ctx.createLinearGradient(0,pad.t,0,pad.t+ph);
+g1.addColorStop(0,color+'18');g1.addColorStop(1,color+'03');ctx.fillStyle=g1;ctx.fill();
+ctx.strokeStyle=sc;ctx.lineWidth=1.5;ctx.beginPath();
+ctx.moveTo(sx(pts[spIdx].x),sy(pts[spIdx].y));
+for(var i=spIdx+1;i<pts.length;i++)ctx.lineTo(sx(pts[i].x),sy(pts[i].y));
+ctx.stroke();
+ctx.beginPath();ctx.moveTo(sx(pts[spIdx].x),sy(pts[spIdx].y));
+for(var i=spIdx+1;i<pts.length;i++)ctx.lineTo(sx(pts[i].x),sy(pts[i].y));
+ctx.lineTo(sx(pts[pts.length-1].x),pad.t+ph);ctx.lineTo(sx(pts[spIdx].x),pad.t+ph);ctx.closePath();
+var g2=ctx.createLinearGradient(0,pad.t,0,pad.t+ph);
+g2.addColorStop(0,sc+'10');g2.addColorStop(1,sc+'03');ctx.fillStyle=g2;ctx.fill();
+ctx.save();ctx.strokeStyle=color;ctx.setLineDash([4,4]);ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(sx(pts[spIdx].x),pad.t);ctx.lineTo(sx(pts[spIdx].x),pad.t+ph);ctx.stroke();ctx.restore();
+}else{
+ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();
+for(var i=0;i<pts.length;i++){var x=sx(pts[i].x),y=sy(pts[i].y);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
 ctx.stroke();
 var grad=ctx.createLinearGradient(0,pad.t,0,pad.t+ph);
 grad.addColorStop(0,color+'18');grad.addColorStop(1,color+'03');
 ctx.fillStyle=grad;
-ctx.lineTo(sx(pts[pts.length-1].x),pad.t+ph);
-ctx.lineTo(sx(pts[0].x),pad.t+ph);
-ctx.closePath();ctx.fill();
+ctx.lineTo(sx(pts[pts.length-1].x),pad.t+ph);ctx.lineTo(sx(pts[0].x),pad.t+ph);ctx.closePath();ctx.fill();
+}
 
 // snapshot for hover redraw
 var base=ctx.getImageData(0,0,c.width,c.height);
@@ -1133,11 +1172,12 @@ ctx.setLineDash([]);
 ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);
 ctx.fillStyle='#000';ctx.fill();
 ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);
-ctx.fillStyle=color;ctx.fill();
+var hc=(spIdx>=0&&spIdx<pts.length-1&&best.x>pts[spIdx].x)?sc:color;
+ctx.fillStyle=hc;ctx.fill();
 ctx.restore();
 var fv=opts.fmtY?opts.fmtY(best.y):fmt(best.y);
 var extra=opts.tipExtra?opts.tipExtra(best):'';
-showTip(e,'<span style="color:'+color+'">\u25CF '+(opts.yLabel||'value')+'</span> <b style="color:#eee">'+fv+'</b><br><span style="color:#555">block '+Math.round(best.x)+'</span>'+extra);
+showTip(e,'<span style="color:'+hc+'">\u25CF '+(opts.yLabel||'value')+'</span> <b style="color:#eee">'+fv+'</b><br><span style="color:#555">block '+Math.round(best.x)+'</span>'+extra);
 });
 c.addEventListener('mouseleave',function(){ctx.putImageData(base,0,0);hideTip();});
 }
@@ -1239,7 +1279,7 @@ if(mo>=MTT){r=TE;}else{var yr=mo/12;r=(IR-TE)*Math.exp(-DR*yr)+TE;}
 emD.push({h:h,r:r/100000000});
 }
 var genTs={{.GenesisTs}};
-draw('c-emission',function(d){return d.r;},'#af0',{data:emD,yLabel:'BNT/block',fmtY:function(v){return v.toFixed(2)+' BNT';},tipExtra:function(pt){var d=new Date((genTs+pt.x*300)*1000);return '<br><span style="color:#555">~'+d.toISOString().slice(0,10)+'</span>';}});
+draw('c-emission',function(d){return d.r;},'#f0a',{data:emD,yLabel:'BNT/block',splitAt:{{.Height}},splitColor:'#af0',fmtY:function(v){return v.toFixed(2)+' BNT';},tipExtra:function(pt){var d=new Date((genTs+pt.x*300)*1000);return '<br><span style="color:#555">~'+d.toISOString().slice(0,10)+'</span>';}});
 
 })();
 </script>

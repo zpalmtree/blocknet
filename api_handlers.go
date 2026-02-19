@@ -393,7 +393,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	recipient.Memo = memo
 
 	builder := s.createTxBuilder()
-	result, err := builder.Transfer([]wallet.Recipient{recipient}, 1000, height)
+	result, err := builder.Transfer([]wallet.Recipient{recipient}, 10, height)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
@@ -1281,8 +1281,8 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,
-		MinFee:      10000, // 0.0001 BNT minimum
-		FeePerByte:  100,   // 0.000001 BNT per byte
+		MinFee:      1000,  // 0.00001 BNT minimum
+		FeePerByte:  10,    // 0.0000001 BNT per byte
 	}
 
 	return wallet.NewBuilder(s.wallet, cfg)
