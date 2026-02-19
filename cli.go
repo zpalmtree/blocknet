@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"blocknet/wallet"
 
@@ -595,7 +597,9 @@ func (c *CLI) cmdSend(args []string) error {
 	// Parse optional memo. Plain text is UTF-8 bytes. Hex can be passed as hex:<hex>.
 	var memo []byte
 	if len(args) >= 3 {
-		raw := args[2]
+		// strings.Fields() doesn't preserve quoting, so join the remainder back
+		// together to support memos with spaces.
+		raw := strings.TrimSpace(strings.Join(args[2:], " "))
 		if strings.HasPrefix(raw, "hex:") {
 			decoded, err := hex.DecodeString(strings.TrimPrefix(raw, "hex:"))
 			if err != nil {
@@ -603,6 +607,11 @@ func (c *CLI) cmdSend(args []string) error {
 			}
 			memo = decoded
 		} else {
+			// Best-effort strip of single/double quotes for UX when user types:
+			// send <addr> <amt> "memo with spaces"
+			if len(raw) >= 2 && ((raw[0] == '"' && raw[len(raw)-1] == '"') || (raw[0] == '\'' && raw[len(raw)-1] == '\'')) {
+				raw = raw[1 : len(raw)-1]
+			}
 			memo = []byte(raw)
 		}
 		if len(memo) > wallet.MemoSize-4 {
@@ -801,7 +810,12 @@ func (c *CLI) cmdHistory() {
 
 		memoStr := ""
 		if len(evt.memo) > 0 {
-			memoStr = " memo:" + hex.EncodeToString(evt.memo)
+			memoHex := hex.EncodeToString(evt.memo)
+			if memoText, ok := memoTextIfPrintable(evt.memo); ok {
+				memoStr = " memo:" + strconv.QuoteToASCII(memoText) + " hex:" + memoHex
+			} else {
+				memoStr = " memo:hex:" + memoHex
+			}
 		}
 
 		fmt.Printf("%s %s%-3s%s %-16s %x%s\n",
@@ -814,6 +828,34 @@ func (c *CLI) cmdHistory() {
 			memoStr,
 		)
 	}
+}
+
+func memoTextIfPrintable(b []byte) (string, bool) {
+	// Trim trailing NUL padding (common for fixed-size memo fields).
+	end := len(b)
+	for end > 0 && b[end-1] == 0 {
+		end--
+	}
+	b = b[:end]
+	if len(b) == 0 {
+		return "", false
+	}
+
+	if !utf8.Valid(b) {
+		return "", false
+	}
+
+	s := string(b)
+	for _, r := range s {
+		// Avoid breaking the one-line history output.
+		if r == '\n' || r == '\r' {
+			return "", false
+		}
+		if !unicode.IsPrint(r) {
+			return "", false
+		}
+	}
+	return s, true
 }
 
 func (c *CLI) cmdPeers() {
