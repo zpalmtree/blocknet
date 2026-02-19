@@ -581,7 +581,6 @@ func (c *CLI) cmdAddress() {
 	// For stealth addresses, we always give the same public address
 	// The one-time addresses are derived per-transaction by senders
 	fmt.Printf("Your address:\n%s\n", c.wallet.Address())
-	fmt.Println("\n(Senders derive unique one-time addresses from this)")
 }
 
 func (c *CLI) cmdSend(args []string) error {
@@ -647,6 +646,13 @@ func (c *CLI) cmdSend(args []string) error {
 
 	// Confirm
 	fmt.Printf("\nSend %s to %s...?\n", formatAmount(amount), recipientAddr[:24])
+	if len(memo) > 0 {
+		if memoText, ok := memoTextIfPrintable(memo); ok {
+			fmt.Printf("with memo str: %s\n", strconv.QuoteToASCII(memoText))
+		} else {
+			fmt.Printf("with memo hex: %s\n", strings.ToUpper(hex.EncodeToString(memo)))
+		}
+	}
 	fmt.Print("Confirm [y/N]: ")
 
 	confirm, _ := c.reader.ReadString('\n')
