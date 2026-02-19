@@ -333,7 +333,15 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		GetMempool:        d.getMempoolTxs,
 		ProcessTx:         d.processTxData,
 		IsOrphanError: func(err error) bool {
-			return errors.Is(err, ErrOrphanBlock)
+			if errors.Is(err, ErrOrphanBlock) {
+				return true
+			}
+			// "incomplete chain" means we're missing ancestor blocks locally —
+			// this is our problem, not the peer's. Don't penalize them.
+			if err != nil && strings.Contains(err.Error(), "incomplete chain") {
+				return true
+			}
+			return false
 		},
 		IsDuplicateError: func(err error) bool {
 			return errors.Is(err, ErrDuplicateBlock) || errors.Is(err, ErrSideChainBlock)

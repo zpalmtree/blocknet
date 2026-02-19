@@ -1080,7 +1080,7 @@ func (c *CLI) cmdMining(args []string) error {
 		fmt.Println("Stopping miner...")
 		c.daemon.StopMining()
 		fmt.Println("Mining stopped")
-	case "threads":
+	case "threads", "thrads", "thread", "thrad", "t":
 		if len(args) < 2 {
 			fmt.Printf("Mining threads: %d\n", c.daemon.Miner().Threads())
 			return nil
