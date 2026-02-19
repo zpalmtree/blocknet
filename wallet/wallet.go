@@ -780,6 +780,17 @@ func (w *Wallet) GetSendRecord(txID [32]byte) *SendRecord {
 	return nil
 }
 
+// SendRecords returns a snapshot of the wallet's outgoing transaction records.
+// Callers must treat the returned records as read-only.
+func (w *Wallet) SendRecords() []*SendRecord {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	records := make([]*SendRecord, len(w.data.SendHistory))
+	copy(records, w.data.SendHistory)
+	return records
+}
+
 // ============================================================================
 // Encryption helpers (Argon2id + AES-GCM)
 // ============================================================================

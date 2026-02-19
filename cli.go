@@ -706,8 +706,9 @@ func (c *CLI) cmdSend(args []string) error {
 func (c *CLI) cmdHistory() {
 	// Get all outputs (both spent and unspent)
 	outputs := c.wallet.AllOutputs()
+	sendRecords := c.wallet.SendRecords()
 
-	if len(outputs) == 0 {
+	if len(outputs) == 0 && len(sendRecords) == 0 {
 		fmt.Println("No transaction history")
 		return
 	}
@@ -753,30 +754,34 @@ func (c *CLI) cmdHistory() {
 		})
 	}
 
-	// Add outgoing events (from send history)
-	// Track which TxIDs we've already added to avoid duplicates
+	// Add outgoing events from the wallet's persisted send history.
+	// This is the authoritative source for outbound txids; owned outputs only
+	// contain the txid that created them (not the txid that spent them).
 	seenTxIDs := make(map[[32]byte]bool)
-	for _, out := range outputs {
-		if out.Spent && out.SpentHeight > 0 {
-			// Check if we have send metadata for this transaction
-			sendRecord := c.wallet.GetSendRecord(out.TxID)
-			if sendRecord != nil && !seenTxIDs[out.TxID] {
-				block := c.daemon.Chain().GetBlockByHeight(out.SpentHeight)
-				if block == nil {
-					continue
-				}
-				events = append(events, historyEvent{
-					timestamp: block.Header.Timestamp,
-					direction: "OUT",
-					amount:    sendRecord.Amount, // Use actual sent amount
-					height:    out.SpentHeight,
-					color:     red,
-					txHash:    out.TxID,
-					memo:      sendRecord.Memo,
-				})
-				seenTxIDs[out.TxID] = true
+	for _, sendRecord := range sendRecords {
+		if sendRecord == nil || seenTxIDs[sendRecord.TxID] {
+			continue
+		}
+
+		// Prefer chain timestamp when the block is available, otherwise fall back
+		// to the local timestamp captured at send time.
+		ts := sendRecord.Timestamp
+		if sendRecord.BlockHeight > 0 {
+			if block := c.daemon.Chain().GetBlockByHeight(sendRecord.BlockHeight); block != nil {
+				ts = block.Header.Timestamp
 			}
 		}
+
+		events = append(events, historyEvent{
+			timestamp: ts,
+			direction: "OUT",
+			amount:    sendRecord.Amount,
+			height:    sendRecord.BlockHeight,
+			color:     red,
+			txHash:    sendRecord.TxID,
+			memo:      sendRecord.Memo,
+		})
+		seenTxIDs[sendRecord.TxID] = true
 	}
 
 	// Sort by timestamp (oldest first)
