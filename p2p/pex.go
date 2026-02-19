@@ -806,6 +806,11 @@ func (pex *PeerExchange) BanPeer(pid peer.ID, reason string, duration time.Durat
 
 // banPeerLocked bans a peer (caller must hold lock)
 func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time.Duration) {
+	for _, seed := range pex.seedNodes {
+		if seed.ID == pid {
+			return
+		}
+	}
 	now := time.Now()
 
 	// Check existing ban record
