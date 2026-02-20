@@ -4,10 +4,14 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"blocknet/p2p"
 	"blocknet/wallet"
 )
 
@@ -28,6 +32,7 @@ func main() {
 	noVersionCheck := flag.Bool("no-version-check", false, "Disable remote version check on startup")
 	saveCheckpoints := flag.Bool("save-checkpoints", false, "Append a record to checkpoints.dat every 100 blocks (writes to data dir)")
 	fullSync := flag.Bool("full-sync", false, "Bypass checkpoints (download + verification) and sync naturally from peers")
+	outputPeerAddr := flag.Bool("output-peer-address", false, "Load identity key, resolve public IP, write peer.txt and exit")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
 	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
@@ -37,6 +42,14 @@ func main() {
 
 	if *version {
 		fmt.Println(Version)
+		return
+	}
+
+	if *outputPeerAddr {
+		if err := outputPeerAddress(*dataDir, *listen); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -191,4 +204,64 @@ func createViewOnlyWallet(filename, spendPubHex, viewPrivHex string) error {
 	fmt.Println("\nThis wallet can monitor incoming funds but cannot spend.")
 
 	return nil
+}
+
+func outputPeerAddress(dataDir, listenAddr string) error {
+	keyPath := filepath.Join(dataDir, "identity.key")
+	if envKey := strings.TrimSpace(os.Getenv("BLOCKNET_P2P_KEY")); envKey != "" {
+		keyPath = envKey
+	}
+	if err := os.Setenv("BLOCKNET_P2P_KEY", keyPath); err != nil {
+		return fmt.Errorf("failed to set BLOCKNET_P2P_KEY: %w", err)
+	}
+
+	mgr, err := p2p.NewIdentityManager(p2p.DefaultIdentityConfig())
+	if err != nil {
+		return fmt.Errorf("failed to load identity: %w", err)
+	}
+	_, peerID := mgr.CurrentIdentity()
+
+	port := "28080"
+	if parts := strings.Split(listenAddr, "/"); len(parts) >= 5 {
+		port = parts[len(parts)-1]
+	}
+
+	publicIP, err := detectPublicIP()
+	if err != nil {
+		return fmt.Errorf("failed to detect public IP: %w", err)
+	}
+
+	multiaddr := fmt.Sprintf("/ip4/%s/tcp/%s/p2p/%s", publicIP, port, peerID.String())
+
+	if err := os.WriteFile("peer.txt", []byte(multiaddr+"\n"), 0644); err != nil {
+		return fmt.Errorf("failed to write peer.txt: %w", err)
+	}
+
+	fmt.Println(multiaddr)
+	return nil
+}
+
+func detectPublicIP() (string, error) {
+	services := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, svc := range services {
+		resp, err := client.Get(svc)
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		ip := strings.TrimSpace(string(body))
+		if ip != "" {
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("all IP detection services failed")
 }

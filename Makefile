@@ -84,7 +84,7 @@ deps:
 deploy:
 	@echo "Deploying to seed node..."
 	for host in blocknet bnt-0 bnt-1 bnt-2 bnt-3 bnt-4; do \
-		rsync -avz --exclude 'target/' --exclude '.git/' --exclude '*.dat' --exclude 'data/' --exclude 'releases/' . $$host:~/blocknet/; \
+		rsync -avz --exclude 'target/' --exclude '.git/' --exclude '*.dat' --exclude '*.db' --exclude 'data/' --exclude 'blocknet-data-*/' --exclude 'releases/' --exclude 'blocknet' --exclude 'peer.txt' . $$host:~/blocknet/; \
 		ssh $$host "cd ~/blocknet && make all"; \
 	done
 
