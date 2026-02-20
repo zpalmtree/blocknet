@@ -116,6 +116,17 @@ func (s *APIServer) handleMempool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.daemon.Mempool().Stats())
 }
 
+// handleMempoolTxs returns all mempool transactions as full tx objects.
+// GET /api/mempool/txs
+func (s *APIServer) handleMempoolTxs(w http.ResponseWriter, r *http.Request) {
+	entries := s.daemon.Mempool().GetAllEntries()
+	txs := make([]*Transaction, 0, len(entries))
+	for _, entry := range entries {
+		txs = append(txs, entry.Tx)
+	}
+	writeJSON(w, http.StatusOK, txs)
+}
+
 // handlePeers returns connected peers.
 // GET /api/peers
 func (s *APIServer) handlePeers(w http.ResponseWriter, r *http.Request) {

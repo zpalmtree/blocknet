@@ -10,7 +10,10 @@ import (
 var (
 	ErrInsufficientFunds  = errors.New("insufficient funds")
 	ErrNoSpendableOutputs = errors.New("no spendable outputs")
+	ErrInputLimitExceeded = errors.New("input limit exceeded")
 )
+
+const maxSelectedInputs = 256
 
 // SelectInputs chooses outputs to spend for a given target amount
 // Uses a combination of strategies to minimize fees and maximize privacy
@@ -43,14 +46,19 @@ func SelectInputs(available []*OwnedOutput, targetAmount uint64) ([]*OwnedOutput
 		return exact, nil
 	}
 
-	// Try smallest-first selection (minimizes number of inputs)
-	selected := selectSmallestFirst(spendable, targetAmount)
+	// Try smallest-first only when it can satisfy target within the tx input cap.
+	selected, ok := selectSmallestFirstCapped(spendable, targetAmount, maxSelectedInputs)
+	if ok {
+		return selected, nil
+	}
+
+	// Fallback to a mixed strategy that stays under input cap.
+	selected = selectMixed(spendable, targetAmount, maxSelectedInputs)
 	if selected != nil {
 		return selected, nil
 	}
 
-	// Fallback: use all inputs if needed
-	return spendable, nil
+	return nil, ErrInputLimitExceeded
 }
 
 func randIndex(n int) (int, bool) {
@@ -147,6 +155,128 @@ func selectSmallestFirst(outputs []*OwnedOutput, target uint64) []*OwnedOutput {
 	}
 
 	return nil // shouldn't reach here if totalAvailable >= target
+}
+
+// selectSmallestFirstCapped mirrors smallest-first behavior but refuses
+// selections that need more than maxInputs.
+func selectSmallestFirstCapped(outputs []*OwnedOutput, target uint64, maxInputs int) ([]*OwnedOutput, bool) {
+	if maxInputs <= 0 {
+		return nil, false
+	}
+
+	sorted := make([]*OwnedOutput, len(outputs))
+	copy(sorted, outputs)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Amount != sorted[j].Amount {
+			return sorted[i].Amount < sorted[j].Amount
+		}
+		return false
+	})
+
+	var selected []*OwnedOutput
+	var total uint64
+	for _, out := range sorted {
+		if len(selected) >= maxInputs {
+			return nil, false
+		}
+		selected = append(selected, out)
+		total += out.Amount
+		if total >= target {
+			return selected, true
+		}
+	}
+
+	return nil, false
+}
+
+// selectMixed starts with a capped largest-first set (fast to build),
+// then replaces some large inputs with smaller ones when possible.
+func selectMixed(outputs []*OwnedOutput, target uint64, maxInputs int) []*OwnedOutput {
+	base := selectLargestFirstCapped(outputs, target, maxInputs)
+	if base == nil {
+		return nil
+	}
+
+	selected := make([]*OwnedOutput, len(base))
+	copy(selected, base)
+
+	var total uint64
+	chosen := make(map[*OwnedOutput]struct{}, len(selected))
+	for _, out := range selected {
+		total += out.Amount
+		chosen[out] = struct{}{}
+	}
+
+	// Replacement candidates from smallest upward.
+	candidates := make([]*OwnedOutput, 0, len(outputs))
+	for _, out := range outputs {
+		if _, ok := chosen[out]; ok {
+			continue
+		}
+		candidates = append(candidates, out)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Amount != candidates[j].Amount {
+			return candidates[i].Amount < candidates[j].Amount
+		}
+		return false
+	})
+
+	// Keep selected ordered by largest first to replace expensive inputs first.
+	sort.Slice(selected, func(i, j int) bool {
+		if selected[i].Amount != selected[j].Amount {
+			return selected[i].Amount > selected[j].Amount
+		}
+		return false
+	})
+
+	for _, small := range candidates {
+		// Find first replaceable large input.
+		for i := 0; i < len(selected); i++ {
+			large := selected[i]
+			if large.Amount <= small.Amount {
+				continue
+			}
+			newTotal := total - large.Amount + small.Amount
+			if newTotal < target {
+				continue
+			}
+			selected[i] = small
+			total = newTotal
+			break
+		}
+	}
+
+	return selected
+}
+
+func selectLargestFirstCapped(outputs []*OwnedOutput, target uint64, maxInputs int) []*OwnedOutput {
+	if maxInputs <= 0 {
+		return nil
+	}
+
+	sorted := make([]*OwnedOutput, len(outputs))
+	copy(sorted, outputs)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Amount != sorted[j].Amount {
+			return sorted[i].Amount > sorted[j].Amount
+		}
+		return false
+	})
+
+	var selected []*OwnedOutput
+	var total uint64
+	for _, out := range sorted {
+		if len(selected) >= maxInputs {
+			return nil
+		}
+		selected = append(selected, out)
+		total += out.Amount
+		if total >= target {
+			return selected
+		}
+	}
+	return nil
 }
 
 // SelectInputsWithDecoys is an alternative that also considers decoy availability

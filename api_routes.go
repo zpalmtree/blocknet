@@ -9,6 +9,7 @@ func (s *APIServer) registerPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/block/{id}", s.handleBlock)
 	mux.HandleFunc("GET /api/tx/{hash}", s.handleTx)
 	mux.HandleFunc("GET /api/mempool", s.handleMempool)
+	mux.HandleFunc("GET /api/mempool/txs", s.handleMempoolTxs)
 	mux.HandleFunc("GET /api/peers", s.handlePeers)
 	mux.HandleFunc("GET /api/peers/banned", s.handleBannedPeers)
 }

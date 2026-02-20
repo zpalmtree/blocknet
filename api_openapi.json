@@ -295,6 +295,66 @@
         }
       }
     },
+    "/api/mempool/txs": {
+      "get": {
+        "operationId": "getMempoolTxs",
+        "tags": ["Blockchain"],
+        "summary": "Full mempool transactions",
+        "description": "Returns all currently unconfirmed mempool transactions as full transaction objects in a JSON array. Each item matches the same `Transaction` schema returned by `GET /api/tx/{hash}`. Returns an empty array when the mempool is empty.",
+        "responses": {
+          "200": {
+            "description": "Array of mempool transactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MempoolTransactions"
+                },
+                "examples": {
+                  "non_empty": {
+                    "summary": "Mempool has transactions",
+                    "value": [
+                      {
+                        "version": 1,
+                        "inputs": [
+                          {
+                            "key_image": [206,194,102,91,117,127,68,44,128,196,45,250,102,215,110,191,198,108,77,236,91,173,42,44,240,161,206,21,137,3,217,104],
+                            "ring_members": [
+                              [226,131,206,64,181,243,28,67,77,209,63,49,60,73,151,89,90,209,74,106,163,255,119,131,60,185,95,37,147,5,24,172],
+                              [110,193,204,172,204,197,212,189,47,92,19,190,204,227,117,159,115,159,54,160,111,127,196,151,224,41,224,215,131,35,150,164]
+                            ],
+                            "ring_commitments": [
+                              [244,65,131,220,148,209,81,144,194,225,99,194,172,101,176,2,181,151,98,87,133,213,118,209,176,204,1,57,103,0,158,85],
+                              [227,105,135,213,239,147,102,10,53,157,38,16,29,213,153,189,151,99,51,202,204,88,135,235,168,65,66,228,199,214,91,184]
+                            ],
+                            "pseudo_output": [185,41,236,101,236,26,183,66,110,82,226,90,90,18,56,11,87,242,214,41,217,44,73,158,2,195,168,69,207,102,28,108],
+                            "ring_signature": "gGqM7cNe9fNWJnrrBzqo/CSrAowGo9OFVEUYyxIYr3WVUeAd1XVgO/hXi426JGVYtSk6QEZMLBDCVbV2Uq4br99gnVs4S/4GdsAxeOMpUlXjv4GgF8sKmVFDBZKXlD/8"
+                          }
+                        ],
+                        "outputs": [
+                          {
+                            "commitment": [57,12,140,125,114,71,52,44,216,16,15,47,111,119,13,101,214,112,229,142,3,81,216,174,142,79,110,172,52,47,194,49],
+                            "public_key": [183,176,135,22,235,63,193,40,150,185,98,35,23,116,148,40,119,51,194,142,232,186,83,189,181,107,136,36,87,125,83,236],
+                            "encrypted_amount": [81,216,32,197,195,239,128,5],
+                            "encrypted_memo": [58,136,174,57,150,222,80,232,1,134,91,54,152,101,78,191,82,0,165,250,9,57,185,157,122,29,123,40,43,248,35,64,65,243,84,135,216,108,102,159,204,191,224,231,61,126,115,32,173,10,117,112,3,36,30,117,34,16,169,36,121,142,248,109,67,242,124,242,208,97,48,49,220,181,216,210,239,27,50,31,206,173,55,127,98,97,229,71,216,93,142,236,127,38,226,50,25,7,47,121,85,208,248,246,109,205,30,84,194,1,199,135,232,146,216,249,79,97,151,111,29,31,160,29,25,244,80,29]
+                          }
+                        ],
+                        "fee": 12000,
+                        "tx_public_key": [194,138,112,166,28,117,16,161,205,137,33,108,161,108,255,202,234,73,135,71,126,134,219,204,185,112,70,252,46,24,56,78]
+                      }
+                    ]
+                  },
+                  "empty": {
+                    "summary": "Mempool is empty",
+                    "value": []
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
     "/api/peers": {
       "get": {
         "operationId": "getPeers",
@@ -1659,6 +1719,22 @@
           "max_fee": 25000,
           "avg_fee": 14600.0
         }
+      },
+      "MempoolTransactions": {
+        "type": "array",
+        "description": "Array of unconfirmed transactions currently in the mempool.",
+        "items": {
+          "$ref": "#/components/schemas/Transaction"
+        },
+        "example": [
+          {
+            "version": 1,
+            "inputs": [],
+            "outputs": [],
+            "fee": 12000,
+            "tx_public_key": [194,138,112,166,28,117,16,161,205,137,33,108,161,108,255,202,234,73,135,71,126,134,219,204,185,112,70,252,46,24,56,78]
+          }
+        ]
       },
       "BanEntry": {
         "type": "object",
