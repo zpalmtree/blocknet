@@ -42,7 +42,7 @@ test:
 	@echo "Testing Rust library..."
 	cd crypto-rs && cargo test
 	@echo "Testing Go code..."
-	go test ./...
+	go test -v ./...
 
 # Run the project
 run: build-go
@@ -79,18 +79,3 @@ deps:
 	cd crypto-rs && cargo fetch
 	@echo "Installing Go dependencies..."
 	go mod download
-
-# Deploy to seed node
-deploy:
-	@echo "Deploying to seed node..."
-	for host in blocknet bnt-0 bnt-1 bnt-2 bnt-3 bnt-4; do \
-		rsync -avz --exclude 'target/' --exclude '.git/' --exclude '*.dat' --exclude '*.db' --exclude 'data/' --exclude 'blocknet-data-*/' --exclude 'releases/' --exclude 'blocknet' --exclude 'peer.txt' . $$host:~/blocknet/; \
-		ssh $$host "cd ~/blocknet && make all"; \
-	done
-
-# Deploy release to website
-deploy-release: release
-	@echo "Deploying release to website..."
-	scp releases/blocknet-$(VERSION)-$(OS)-$(ARCH).zip blocknet:/var/www/blocknet/releases/
-	ssh blocknet "cd /var/www/blocknet/releases && cat >> SHA256SUMS.txt" < releases/SHA256SUMS.txt
-	@echo "Release deployed to https://blocknetcrypto.com/releases/"

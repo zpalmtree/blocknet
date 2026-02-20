@@ -203,12 +203,12 @@ type DaemonConfig struct {
 
 // DefaultSeedNodes are the hardcoded bootstrap nodes
 var DefaultSeedNodes = []string{
-	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWLhWY99sixSJDTfN8AYmSgujC5wz6Gd3bYRP9oDKK8pxa",
-	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWCiHt8wcWKu8A2t38vptZ1RYp1cjRfb8NDro1cA9NmiAS",
-	"/ip4/46.62.252.254/tcp/28080/p2p/12D3KooWN8sDhYjR6tFmVmMRH8P9g1iCQvRLaP2Dt2BYhJFEvyZ5",
-	"/ip4/46.62.202.165/tcp/28080/p2p/12D3KooWFfDDcJNbrMF3x8GF6icGBP4VpWPXTvrACg6Cieanm3Rw",
-	"/ip4/46.62.249.240/tcp/28080/p2p/12D3KooWBqRDpEu4DBxz6yxMwBc6n3efEkaXwkUoSPbv1ut9tF7E",
-	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWECNySEaYawJdXgjqDAtKv3MzU1FZ8mrvh37oCh8fmsJY",
+	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWQUNGJrsU5nRXNk45FT3ZumdtWC9Sg9Xt2AgU3XkP382R",
+	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWSQTy8rav5nmapgxomAMpSrigJTUXHmjH25dtHhGU3BAM",
+	"/ip4/46.62.252.254/tcp/28080/p2p/12D3KooWCJzbwahELLrssLMbvxCXAp2HeeH1nPTYHH1kFERZxxb8",
+	"/ip4/46.62.202.165/tcp/28080/p2p/12D3KooWSAWJofx3Gk9Rbgs5UQFsUVCDkMDybr85v2j5gN3ocnUL",
+	"/ip4/46.62.249.240/tcp/28080/p2p/12D3KooWKSgY1tDEfTNXo7AEE3tzsrnieEHmcUjYJfGz1LF72UJt",
+	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWPMeQZB8pJTavN6KXJ12LpMYfBSYDkV1md2xsYaWC8VMa",
 }
 
 // DefaultDaemonConfig returns sensible defaults
