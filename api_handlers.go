@@ -353,9 +353,15 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate address
-	addr := sanitizeInput(req.Address)
-	spendPub, viewPub, err := wallet.ParseAddress(addr)
+	// Validate address or resolve handle
+	recipientInput := sanitizeInput(req.Address)
+	resolvedAddr, resolvedInfo, err := resolveRecipientAddress(recipientInput)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid recipient: %v", err))
+		return
+	}
+
+	spendPub, viewPub, err := wallet.ParseAddress(resolvedAddr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid address")
 		return
@@ -426,7 +432,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	s.wallet.RecordSend(&wallet.SendRecord{
 		TxID:        result.TxID,
 		Timestamp:   time.Now().Unix(),
-		Recipient:   addr,
+		Recipient:   recipientInput,
 		Amount:      req.Amount,
 		Fee:         result.Fee,
 		BlockHeight: height,
@@ -444,6 +450,11 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		"txid":   fmt.Sprintf("%x", result.TxID),
 		"fee":    result.Fee,
 		"change": result.Change,
+	}
+	if resolvedInfo != nil {
+		resp["resolved_handle"] = resolvedInfo.Handle
+		resp["resolved_address"] = resolvedAddr
+		resp["resolver_verified"] = resolvedInfo.Verified
 	}
 	if len(memo) > 0 {
 		resp["memo_hex"] = hex.EncodeToString(memo)
@@ -1292,8 +1303,8 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,
-		MinFee:      1000,  // 0.00001 BNT minimum
-		FeePerByte:  10,    // 0.0000001 BNT per byte
+		MinFee:      1000, // 0.00001 BNT minimum
+		FeePerByte:  10,   // 0.0000001 BNT per byte
 	}
 
 	return wallet.NewBuilder(s.wallet, cfg)

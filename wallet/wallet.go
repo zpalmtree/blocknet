@@ -358,6 +358,14 @@ func (w *Wallet) IsViewOnly() bool {
 	return w.data.ViewOnly
 }
 
+// EncryptionPasswordClone returns a best-effort clone of the wallet encryption
+// password for internal operations that create additional wallet files.
+func (w *Wallet) EncryptionPasswordClone() []byte {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return cloneBytes(w.password)
+}
+
 // ExportViewOnlyKeys exports the keys needed to create a view-only wallet
 func (w *Wallet) ExportViewOnlyKeys() ViewOnlyKeys {
 	w.mu.RLock()

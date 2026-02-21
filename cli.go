@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -551,6 +552,8 @@ func (c *CLI) executeCommand(line string) error {
 		c.cmdSync()
 	case "seed":
 		return c.cmdSeed()
+	case "import":
+		return c.cmdImport()
 	case "viewkeys":
 		return c.cmdViewKeys()
 	case "lock":
@@ -595,6 +598,7 @@ Commands:%s
   mining start|stop|threads Control mining
   sync              Rescan blocks for outputs
   seed              Show wallet recovery seed (careful!)
+  import            Create wallet file from 12-word recovery seed
   viewkeys          Create a view-only wallet file
   lock              Lock wallet
   unlock            Unlock wallet
@@ -723,7 +727,18 @@ func (c *CLI) cmdSend(args []string) error {
 	}
 
 	// Parse recipient address (strip control characters from copy-paste)
-	recipientAddr := sanitizeInput(args[0])
+	recipientInput := sanitizeInput(args[0])
+	recipientAddr, resolvedInfo, err := resolveRecipientAddress(recipientInput)
+	if err != nil {
+		return fmt.Errorf("invalid recipient: %w", err)
+	}
+	if resolvedInfo != nil && resolvedInfo.Verified {
+		if c.noColor {
+			fmt.Printf("Resolved %s -> %s [verified]\n", recipientInput, recipientAddr)
+		} else {
+			fmt.Printf("Resolved %s -> %s \033[32m✓ verified\033[0m\n", recipientInput, recipientAddr)
+		}
+	}
 	spendPub, viewPub, err := wallet.ParseAddress(recipientAddr)
 	if err != nil {
 		return fmt.Errorf("invalid address: %w", err)
@@ -766,8 +781,15 @@ func (c *CLI) cmdSend(args []string) error {
 	}
 
 	// Confirm
-	fmt.Printf("\nSend %s to %s?\n", formatAmount(amount), recipientAddr)
+	recipientLabel := recipientAddr
+	if resolvedInfo != nil {
+		recipientLabel = recipientInput
+	}
+	fmt.Printf("\nSend %s to %s?\n", formatAmount(amount), recipientLabel)
 	fmt.Printf("  Fee:    %s\n", formatAmount(result.Fee))
+	if resolvedInfo != nil {
+		fmt.Printf("  Address: %s\n", recipientAddr)
+	}
 	if result.Change > 0 {
 		blocksUntilSpendable := uint64(wallet.SafeConfirmations + 1)
 		arrivalBlock := chainHeight + blocksUntilSpendable
@@ -806,7 +828,7 @@ func (c *CLI) cmdSend(args []string) error {
 	c.wallet.RecordSend(&wallet.SendRecord{
 		TxID:        result.TxID,
 		Timestamp:   time.Now().Unix(),
-		Recipient:   recipientAddr,
+		Recipient:   recipientLabel,
 		Amount:      amount,
 		Fee:         result.Fee,
 		BlockHeight: c.daemon.Chain().Height(),
@@ -1185,6 +1207,63 @@ func (c *CLI) cmdSeed() error {
 	fmt.Println("You can recover your wallet with: blocknet --recover")
 
 	return nil
+}
+
+func (c *CLI) cmdImport() error {
+	fmt.Println("\nInput the 12 words of your seed:")
+	fmt.Print("\n> ")
+
+	line, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read mnemonic: %w", err)
+	}
+	mnemonic := normalizeMnemonicInput(line)
+	if !wallet.ValidateMnemonic(mnemonic) {
+		return fmt.Errorf("invalid mnemonic phrase (expected 12 valid BIP39 words)")
+	}
+
+	fmt.Println("\nInput the name of this wallet:")
+	fmt.Print("\n> ")
+	nameLine, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read wallet name: %w", err)
+	}
+	base := filepath.Base(strings.TrimSpace(nameLine))
+	if base == "" || base == "." || base == "/" {
+		return fmt.Errorf("invalid wallet name")
+	}
+	if !strings.HasSuffix(base, ".wallet.md") {
+		base += ".wallet.md"
+	}
+
+	walletPath := filepath.Join(filepath.Dir(c.walletFile), base)
+	if _, err := os.Stat(walletPath); err == nil {
+		return fmt.Errorf("wallet file already exists: %s", base)
+	}
+
+	password := c.wallet.EncryptionPasswordClone()
+	defer wipeBytes(password)
+	if len(password) == 0 {
+		return fmt.Errorf("cannot import wallet: active wallet password unavailable")
+	}
+
+	if _, err := wallet.NewWalletFromMnemonic(walletPath, password, mnemonic, defaultWalletConfig()); err != nil {
+		return fmt.Errorf("failed to create imported wallet: %w", err)
+	}
+
+	resolvedPath, err := filepath.Abs(walletPath)
+	if err != nil {
+		resolvedPath = walletPath
+	}
+
+	fmt.Printf("\nname: %s created!\n", base)
+	fmt.Printf("path: %s\n", resolvedPath)
+	return nil
+}
+
+func normalizeMnemonicInput(input string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(input), ",", " ")
+	return strings.Join(strings.Fields(normalized), " ")
 }
 
 func (c *CLI) viewWalletFilename() string {
