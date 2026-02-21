@@ -1213,7 +1213,7 @@ if(st>0)hrD.push({h:D[i].h,hr:sd/st});
 }
 draw('c-hash',function(d){return d.hr;},'#fa0',{data:hrD,yLabel:'H/s ('+hrW+'-block avg)',yMin:0});
 var btSum=0,btCnt=0;
-for(var i=0;i<D.length;i++){if(D[i].h>1&&D[i].bt>0){btSum+=D[i].bt;btCnt++;}}
+for(var i=0;i<D.length;i++){if(D[i].h>100&&D[i].bt>0){btSum+=D[i].bt;btCnt++;}}
 var btAvg=btCnt>0?btSum/btCnt:0;
 draw('c-bt',function(d,i){return d.h>1&&d.bt>0?d.bt:null;},'#f0a',{yLabel:'seconds',refLine:300,refLabel:'5m target',refColor:'#fa0',refLabelColor:'#fa0',refLines:[{value:btAvg,label:'avg '+Math.round(btAvg)+'s',color:'#0af',labelColor:'#0af',dash:[2,3]}],yMin:0});
 
