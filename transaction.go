@@ -968,6 +968,17 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 		}
 	}
 
+	// Reject duplicate key images within the same transaction.
+	if len(tx.Inputs) > 1 {
+		seen := make(map[[32]byte]struct{}, len(tx.Inputs))
+		for i, input := range tx.Inputs {
+			if _, dup := seen[input.KeyImage]; dup {
+				return fmt.Errorf("input %d: duplicate key image within transaction", i)
+			}
+			seen[input.KeyImage] = struct{}{}
+		}
+	}
+
 	// Check each input
 	for i, input := range tx.Inputs {
 		// Verify ring size is exactly RingSize
