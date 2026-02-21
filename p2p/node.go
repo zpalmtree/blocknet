@@ -434,6 +434,9 @@ func (n *Node) sendToPeer(p peer.ID, proto protocol.ID, data []byte) error {
 func (n *Node) sendToPeerAsync(p peer.ID, proto protocol.ID, data []byte) {
 	go func(pid peer.ID, pr protocol.ID, payload []byte) {
 		if err := n.sendToPeer(pid, pr, payload); err != nil {
+			if strings.Contains(err.Error(), "protocols not supported") {
+				return
+			}
 			log.Printf("failed to send %s message to peer %s: %v", pr, pid, err)
 		}
 	}(p, proto, data)
