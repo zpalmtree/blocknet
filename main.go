@@ -15,7 +15,7 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.5.1"
+const Version = "0.5.2"
 
 func main() {
 	// Parse command line flags
