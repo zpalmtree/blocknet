@@ -222,6 +222,37 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 	return w, nil
 }
 
+// NewWalletFromStealthKeys creates a full wallet from explicit spend/view keys.
+// This path does not include a BIP39 mnemonic in the wallet file.
+func NewWalletFromStealthKeys(filename string, password []byte, keys StealthKeys, cfg WalletConfig) (*Wallet, error) {
+	w := &Wallet{
+		filename:                filename,
+		password:                cloneBytes(password),
+		inputReservations:       make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:     cfg.GenerateStealthKeys,
+		deriveStealthAddress:    cfg.DeriveStealthAddress,
+		checkStealthOutput:      cfg.CheckStealthOutput,
+		deriveSpendKey:          cfg.DeriveSpendKey,
+		deriveOutputSecret:      cfg.DeriveOutputSecret,
+		generateKeypairFromSeed: cfg.GenerateKeypairFromSeed,
+	}
+
+	w.data = WalletData{
+		Version:      1,
+		Mnemonic:     "",
+		Keys:         keys,
+		Outputs:      make([]*OwnedOutput, 0),
+		SyncedHeight: 0,
+		CreatedAt:    unixNow(),
+	}
+
+	if err := w.Save(); err != nil {
+		return nil, fmt.Errorf("failed to save imported wallet: %w", err)
+	}
+
+	return w, nil
+}
+
 // LoadWallet loads an existing encrypted wallet
 func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, error) {
 	encrypted, err := os.ReadFile(filename)

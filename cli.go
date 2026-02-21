@@ -602,7 +602,7 @@ Commands:%s
   mining start|stop|threads Control mining
   sync              Rescan blocks for outputs
   seed              Show wallet recovery seed (careful!)
-  import            Create wallet file from 12-word recovery seed
+  import            Create wallet file from seed or spend/view keys
   viewkeys          Create a view-only wallet file
   lock              Lock wallet
   unlock            Unlock wallet
@@ -1214,6 +1214,28 @@ func (c *CLI) cmdSeed() error {
 }
 
 func (c *CLI) cmdImport() error {
+	fmt.Println("\nImport type:")
+	fmt.Println("  1) 12-word recovery seed")
+	fmt.Println("  2) spend-key/view-key (hex private keys)")
+	fmt.Print("\nChoose [1/2]: ")
+
+	choiceLine, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read import type: %w", err)
+	}
+	choice := strings.ToLower(strings.TrimSpace(choiceLine))
+
+	switch choice {
+	case "1", "seed", "mnemonic", "12":
+		return c.cmdImportFromMnemonic()
+	case "2", "keys", "key", "spend", "view":
+		return c.cmdImportFromKeys()
+	default:
+		return fmt.Errorf("invalid import type: choose 1 or 2")
+	}
+}
+
+func (c *CLI) cmdImportFromMnemonic() error {
 	fmt.Println("\nInput the 12 words of your seed:")
 	fmt.Print("\n> ")
 
@@ -1226,23 +1248,9 @@ func (c *CLI) cmdImport() error {
 		return fmt.Errorf("invalid mnemonic phrase (expected 12 valid BIP39 words)")
 	}
 
-	fmt.Println("\nInput the name of this wallet:")
-	fmt.Print("\n> ")
-	nameLine, err := c.reader.ReadString('\n')
+	base, walletPath, err := c.importWalletTargetPath()
 	if err != nil {
-		return fmt.Errorf("failed to read wallet name: %w", err)
-	}
-	base := filepath.Base(strings.TrimSpace(nameLine))
-	if base == "" || base == "." || base == "/" {
-		return fmt.Errorf("invalid wallet name")
-	}
-	if !strings.HasSuffix(base, ".wallet.md") {
-		base += ".wallet.md"
-	}
-
-	walletPath := filepath.Join(filepath.Dir(c.walletFile), base)
-	if _, err := os.Stat(walletPath); err == nil {
-		return fmt.Errorf("wallet file already exists: %s", base)
+		return err
 	}
 
 	password := c.wallet.EncryptionPasswordClone()
@@ -1255,6 +1263,93 @@ func (c *CLI) cmdImport() error {
 		return fmt.Errorf("failed to create imported wallet: %w", err)
 	}
 
+	return printImportedWalletPath(base, walletPath)
+}
+
+func (c *CLI) cmdImportFromKeys() error {
+	spendPriv, err := c.promptHex32("Input spend private key (64 hex chars): ")
+	if err != nil {
+		return fmt.Errorf("invalid spend private key: %w", err)
+	}
+	viewPriv, err := c.promptHex32("Input view private key (64 hex chars): ")
+	if err != nil {
+		return fmt.Errorf("invalid view private key: %w", err)
+	}
+
+	spendPub, err := ScalarToPubKey(spendPriv)
+	if err != nil {
+		return fmt.Errorf("failed to derive spend public key: %w", err)
+	}
+	viewPub, err := ScalarToPubKey(viewPriv)
+	if err != nil {
+		return fmt.Errorf("failed to derive view public key: %w", err)
+	}
+
+	base, walletPath, err := c.importWalletTargetPath()
+	if err != nil {
+		return err
+	}
+
+	password := c.wallet.EncryptionPasswordClone()
+	defer wipeBytes(password)
+	if len(password) == 0 {
+		return fmt.Errorf("cannot import wallet: active wallet password unavailable")
+	}
+
+	keys := wallet.StealthKeys{
+		SpendPrivKey: spendPriv,
+		SpendPubKey:  spendPub,
+		ViewPrivKey:  viewPriv,
+		ViewPubKey:   viewPub,
+	}
+	if _, err := wallet.NewWalletFromStealthKeys(walletPath, password, keys, defaultWalletConfig()); err != nil {
+		return fmt.Errorf("failed to create imported wallet: %w", err)
+	}
+
+	return printImportedWalletPath(base, walletPath)
+}
+
+func (c *CLI) importWalletTargetPath() (base string, walletPath string, err error) {
+	fmt.Println("\nInput the name of this wallet:")
+	fmt.Print("\n> ")
+	nameLine, err := c.reader.ReadString('\n')
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read wallet name: %w", err)
+	}
+	base = filepath.Base(strings.TrimSpace(nameLine))
+	if base == "" || base == "." || base == "/" {
+		return "", "", fmt.Errorf("invalid wallet name")
+	}
+	if !strings.HasSuffix(base, ".wallet.md") {
+		base += ".wallet.md"
+	}
+
+	walletPath = filepath.Join(filepath.Dir(c.walletFile), base)
+	if _, err := os.Stat(walletPath); err == nil {
+		return "", "", fmt.Errorf("wallet file already exists: %s", base)
+	}
+	return base, walletPath, nil
+}
+
+func (c *CLI) promptHex32(prompt string) ([32]byte, error) {
+	var out [32]byte
+	fmt.Print("\n" + prompt)
+	line, err := c.reader.ReadString('\n')
+	if err != nil {
+		return out, err
+	}
+	decoded, err := hex.DecodeString(strings.TrimSpace(line))
+	if err != nil {
+		return out, err
+	}
+	if len(decoded) != 32 {
+		return out, fmt.Errorf("expected 64 hex chars")
+	}
+	copy(out[:], decoded)
+	return out, nil
+}
+
+func printImportedWalletPath(base, walletPath string) error {
 	resolvedPath, err := filepath.Abs(walletPath)
 	if err != nil {
 		resolvedPath = walletPath
