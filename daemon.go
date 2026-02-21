@@ -186,6 +186,9 @@ type DaemonConfig struct {
 	// P2P settings
 	ListenAddrs []string
 	SeedNodes   []string
+	// Optional P2P peer limits (0 uses p2p defaults)
+	P2PMaxInbound  int
+	P2PMaxOutbound int
 
 	// Mining
 	EnableMining bool
@@ -355,6 +358,12 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	nodeCfg.ListenAddrs = cfg.ListenAddrs
 	nodeCfg.SeedNodes = cfg.SeedNodes
 	nodeCfg.UserAgent = "blocknet/" + Version
+	if cfg.P2PMaxInbound > 0 {
+		nodeCfg.MaxInbound = cfg.P2PMaxInbound
+	}
+	if cfg.P2PMaxOutbound > 0 {
+		nodeCfg.MaxOutbound = cfg.P2PMaxOutbound
+	}
 
 	node, err := p2p.NewNode(nodeCfg)
 	if err != nil {

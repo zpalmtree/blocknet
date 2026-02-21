@@ -23,6 +23,8 @@ func main() {
 	walletFile := flag.String("wallet", DefaultWalletFilename, "Path to wallet file")
 	dataDir := flag.String("data", DefaultDataDir, "Data directory")
 	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
+	p2pMaxInbound := flag.Int("p2p-max-inbound", 0, "Max inbound P2P peers (0 = default)")
+	p2pMaxOutbound := flag.Int("p2p-max-outbound", 0, "Max outbound P2P peers (0 = default)")
 	seedMode := flag.Bool("seed", false, "Run as seed node (persistent P2P identity)")
 	recover := flag.Bool("recover", false, "Recover wallet from mnemonic seed")
 	daemonMode := flag.Bool("daemon", false, "Run headless (no interactive shell)")
@@ -43,6 +45,14 @@ func main() {
 	if *version {
 		fmt.Println(Version)
 		return
+	}
+	if *p2pMaxInbound < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --p2p-max-inbound must be >= 0")
+		os.Exit(1)
+	}
+	if *p2pMaxOutbound < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --p2p-max-outbound must be >= 0")
+		os.Exit(1)
 	}
 
 	if *outputPeerAddr {
@@ -132,6 +142,8 @@ func main() {
 		DataDir:         *dataDir,
 		ListenAddrs:     []string{*listen},
 		SeedNodes:       seedNodes,
+		P2PMaxInbound:   *p2pMaxInbound,
+		P2PMaxOutbound:  *p2pMaxOutbound,
 		RecoverMode:     *recover,
 		DaemonMode:      *daemonMode,
 		ExplorerAddr:    *explorerAddr,
