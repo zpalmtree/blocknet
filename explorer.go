@@ -1054,6 +1054,12 @@ if(pts[i].y<yMin)yMin=pts[i].y;
 if(pts[i].y>yMax)yMax=pts[i].y;
 }
 if(opts.refLine!==undefined){yMin=Math.min(yMin,opts.refLine);yMax=Math.max(yMax,opts.refLine);}
+if(opts.refLines&&opts.refLines.length){
+for(var i=0;i<opts.refLines.length;i++){
+var rl=opts.refLines[i];
+if(rl&&rl.value!==undefined){yMin=Math.min(yMin,rl.value);yMax=Math.max(yMax,rl.value);}
+}
+}
 if(opts.yMin!==undefined)yMin=Math.min(yMin,opts.yMin);
 var yP=(yMax-yMin)*0.08||1;
 yMin-=yP;yMax+=yP;
@@ -1103,11 +1109,25 @@ ctx.fillText(Math.round(val).toString(),pad.l+pw*i/4,H-6);
 
 // reference line
 if(opts.refLine!==undefined){
-ctx.save();ctx.strokeStyle='#444';ctx.setLineDash([4,4]);ctx.lineWidth=1;
+ctx.save();ctx.strokeStyle=opts.refColor||'#444';ctx.setLineDash([4,4]);ctx.lineWidth=1;
 var ry=sy(opts.refLine);
 ctx.beginPath();ctx.moveTo(pad.l,ry);ctx.lineTo(W-pad.r,ry);ctx.stroke();
 ctx.restore();
-if(opts.refLabel){ctx.fillStyle='#666';ctx.textAlign='left';ctx.fillText(opts.refLabel,pad.l+4,ry-6);}
+if(opts.refLabel){ctx.fillStyle=opts.refLabelColor||'#666';ctx.textAlign='left';ctx.fillText(opts.refLabel,pad.l+4,ry-6);}
+}
+if(opts.refLines&&opts.refLines.length){
+for(var i=0;i<opts.refLines.length;i++){
+var rl=opts.refLines[i];
+if(!rl||rl.value===undefined)continue;
+ctx.save();
+ctx.strokeStyle=rl.color||'#444';
+ctx.setLineDash(rl.dash||[4,4]);
+ctx.lineWidth=1;
+var y=sy(rl.value);
+ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
+ctx.restore();
+if(rl.label){ctx.fillStyle=rl.labelColor||'#666';ctx.textAlign='left';ctx.fillText(rl.label,pad.l+4,y-6);}
+}
 }
 
 // line + fill (supports splitAt to change color mid-line)
@@ -1192,7 +1212,10 @@ for(var j=Math.max(1,i-hrW+1);j<=i;j++){if(D[j].bt>0){sd+=D[j].d;st+=D[j].bt;}}
 if(st>0)hrD.push({h:D[i].h,hr:sd/st});
 }
 draw('c-hash',function(d){return d.hr;},'#fa0',{data:hrD,yLabel:'H/s ('+hrW+'-block avg)',yMin:0});
-draw('c-bt',function(d,i){return d.h>1&&d.bt>0?d.bt:null;},'#f0a',{yLabel:'seconds',refLine:300,refLabel:'5m target',yMin:0});
+var btSum=0,btCnt=0;
+for(var i=0;i<D.length;i++){if(D[i].h>1&&D[i].bt>0){btSum+=D[i].bt;btCnt++;}}
+var btAvg=btCnt>0?btSum/btCnt:0;
+draw('c-bt',function(d,i){return d.h>1&&d.bt>0?d.bt:null;},'#f0a',{yLabel:'seconds',refLine:300,refLabel:'5m target',refColor:'#fa0',refLabelColor:'#fa0',refLines:[{value:btAvg,label:'avg '+Math.round(btAvg)+'s',color:'#0af',labelColor:'#0af',dash:[2,3]}],yMin:0});
 
 // nonce histogram
 (function(){
