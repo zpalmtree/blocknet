@@ -221,7 +221,7 @@ func (s *APIServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := VerifyRust(spendPub[:], []byte(req.Message), sigBytes); err != nil {
+	if err := SchnorrVerify(spendPub[:], []byte(req.Message), sigBytes); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false})
 		return
 	}
@@ -349,7 +349,7 @@ func (s *APIServer) handleSign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	keys := s.wallet.Keys()
-	sig, err := SignRust(keys.SpendPrivKey[:], []byte(req.Message))
+	sig, err := SchnorrSign(keys.SpendPrivKey[:], []byte(req.Message))
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return

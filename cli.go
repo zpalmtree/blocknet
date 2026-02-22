@@ -883,7 +883,7 @@ func (c *CLI) cmdSign() error {
 	}
 
 	keys := c.wallet.Keys()
-	sig, err := SignRust(keys.SpendPrivKey[:], []byte(message))
+	sig, err := SchnorrSign(keys.SpendPrivKey[:], []byte(message))
 	if err != nil {
 		return fmt.Errorf("signing failed: %w", err)
 	}
@@ -933,7 +933,7 @@ func (c *CLI) cmdVerifyMsg() error {
 		return fmt.Errorf("invalid signature: must be 64 bytes hex-encoded")
 	}
 
-	if err := VerifyRust(spendPub[:], []byte(message), sigBytes); err != nil {
+	if err := SchnorrVerify(spendPub[:], []byte(message), sigBytes); err != nil {
 		fmt.Println("\nSignature is INVALID.")
 		return nil
 	}

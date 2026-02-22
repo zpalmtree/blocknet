@@ -33,6 +33,23 @@ int32_t blocknet_verify(
     const uint8_t* signature
 );
 
+// Schnorr sign over Ristretto255 (compatible with wallet spend keys)
+// signature_out: 64-byte buffer (32-byte R || 32-byte s)
+int32_t blocknet_schnorr_sign(
+    const uint8_t* private_key,
+    const uint8_t* message,
+    size_t message_len,
+    uint8_t* signature_out
+);
+
+// Schnorr verify over Ristretto255
+int32_t blocknet_schnorr_verify(
+    const uint8_t* public_key,
+    const uint8_t* message,
+    size_t message_len,
+    const uint8_t* signature
+);
+
 // ============================================================================
 // Pedersen Commitments
 // ============================================================================

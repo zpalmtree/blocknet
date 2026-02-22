@@ -81,6 +81,52 @@ func VerifyRust(publicKey []byte, message []byte, signature []byte) error {
 	return nil
 }
 
+// SchnorrSign signs a message with a Ristretto private key (Schnorr over Ristretto255).
+// This is compatible with the wallet's spend key and the public key encoded in stealth addresses.
+func SchnorrSign(privateKey []byte, message []byte) ([]byte, error) {
+	if len(privateKey) != 32 {
+		return nil, fmt.Errorf("private key must be 32 bytes")
+	}
+
+	signature := make([]byte, 64)
+
+	result := C.blocknet_schnorr_sign(
+		(*C.uint8_t)(unsafe.Pointer(&privateKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&message[0])),
+		C.size_t(len(message)),
+		(*C.uint8_t)(unsafe.Pointer(&signature[0])),
+	)
+
+	if result != 0 {
+		return nil, fmt.Errorf("failed to sign message")
+	}
+
+	return signature, nil
+}
+
+// SchnorrVerify verifies a Schnorr signature against a Ristretto public key.
+func SchnorrVerify(publicKey []byte, message []byte, signature []byte) error {
+	if len(publicKey) != 32 {
+		return fmt.Errorf("public key must be 32 bytes")
+	}
+	if len(signature) != 64 {
+		return fmt.Errorf("signature must be 64 bytes")
+	}
+
+	result := C.blocknet_schnorr_verify(
+		(*C.uint8_t)(unsafe.Pointer(&publicKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&message[0])),
+		C.size_t(len(message)),
+		(*C.uint8_t)(unsafe.Pointer(&signature[0])),
+	)
+
+	if result != 0 {
+		return fmt.Errorf("signature verification failed")
+	}
+
+	return nil
+}
+
 // ============================================================================
 // Pedersen Commitments
 // ============================================================================
