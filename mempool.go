@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -276,14 +277,13 @@ func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) []*Transact
 		entries = append(entries, entry)
 	}
 
-	// Sort by fee rate descending
-	for i := 0; i < len(entries)-1; i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].FeeRate > entries[i].FeeRate {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
+	// Sort by fee rate descending (O(n log n)); older txs first as tie-breaker.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].FeeRate == entries[j].FeeRate {
+			return entries[i].AddedAt.Before(entries[j].AddedAt)
 		}
-	}
+		return entries[i].FeeRate > entries[j].FeeRate
+	})
 
 	// Select transactions
 	result := make([]*Transaction, 0, maxCount)
@@ -507,14 +507,13 @@ func (m *Mempool) GetAllEntries() []*MempoolEntry {
 		entries = append(entries, entry)
 	}
 
-	// Sort by fee rate descending
-	for i := 0; i < len(entries)-1; i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].FeeRate > entries[i].FeeRate {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
+	// Sort by fee rate descending (O(n log n)); older txs first as tie-breaker.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].FeeRate == entries[j].FeeRate {
+			return entries[i].AddedAt.Before(entries[j].AddedAt)
 		}
-	}
+		return entries[i].FeeRate > entries[j].FeeRate
+	})
 
 	return entries
 }

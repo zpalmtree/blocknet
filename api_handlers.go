@@ -20,6 +20,18 @@ import (
 	"blocknet/wallet"
 )
 
+const miningTemplateSyncLagTolerance uint64 = 2
+
+// shouldAllowMiningTemplateDuringSync returns whether we should keep serving
+// block templates while the node is syncing. Near-tip catch-up is common and
+// should not force miners into repeated retry loops.
+func shouldAllowMiningTemplateDuringSync(progress, target uint64) bool {
+	if target <= progress {
+		return true
+	}
+	return target-progress <= miningTemplateSyncLagTolerance
+}
+
 // ============================================================================
 // Public handlers (no wallet needed)
 // ============================================================================
@@ -1037,9 +1049,12 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if s.daemon.syncMgr.IsSyncing() {
-		writeError(w, http.StatusServiceUnavailable, "node is syncing")
-		return
+	if sm := s.daemon.syncMgr; sm != nil && sm.IsSyncing() {
+		progress, target, _ := sm.SyncProgress()
+		if !shouldAllowMiningTemplateDuringSync(progress, target) {
+			writeError(w, http.StatusServiceUnavailable, "node is syncing")
+			return
+		}
 	}
 
 	// Read height, prevHash, and difficulty as a single atomic snapshot so a
