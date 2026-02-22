@@ -546,6 +546,10 @@ func (c *CLI) executeCommand(line string) error {
 		c.cmdAddress()
 	case "send":
 		return c.cmdSend(args)
+	case "sign":
+		return c.cmdSign()
+	case "verify":
+		return c.cmdVerifyMsg()
 	case "history", "hist", "h":
 		c.cmdHistory()
 	case "peers":
@@ -572,8 +576,8 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdSave()
 	case "purge":
 		return c.cmdPurgeData()
-	case "verify":
-		c.cmdVerify()
+	case "certify":
+		c.cmdCertify()
 	case "quit", "exit", "q":
 		return fmt.Errorf("quit")
 	default:
@@ -599,6 +603,8 @@ Commands:%s
   balance           Show wallet balance
   address           Show receiving address
   send <addr> <amt> [memo|hex:<memo_hex>] Send funds with optional memo%s
+  sign              Sign a message with your spend key
+  verify            Verify a signed message against an address
   history           Show transaction history
   peers             List connected peers
   banned            List banned peers
@@ -611,7 +617,7 @@ Commands:%s
   lock              Lock wallet
   unlock            Unlock wallet
   save              Save wallet to disk
-  verify            Check chain integrity (difficulty + timestamps)
+  certify           Check chain integrity (difficulty + timestamps)
   purge             Delete all blockchain data (cannot be undone)
   version           Print version
   quit              Exit (saves automatically)
@@ -853,6 +859,90 @@ func (c *CLI) cmdSend(args []string) error {
 
 	fmt.Printf("Transaction sent: %s\nExplorer: https://explorer.blocknetcrypto.com/tx/%s\n", fmt.Sprintf("%x", result.TxID), fmt.Sprintf("%x", result.TxID))
 
+	return nil
+}
+
+func (c *CLI) cmdSign() error {
+	if c.wallet.IsViewOnly() {
+		return fmt.Errorf("view-only wallet cannot sign")
+	}
+
+	fmt.Println("\nEnter the text to sign, press ENTER when you're done.")
+	fmt.Print("\n> ")
+
+	line, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read input: %w", err)
+	}
+	message := strings.TrimSpace(line)
+	if message == "" {
+		return fmt.Errorf("message cannot be empty")
+	}
+	if len(message) > 1024 {
+		return fmt.Errorf("message must be <= 1024 bytes")
+	}
+
+	keys := c.wallet.Keys()
+	sig, err := SignRust(keys.SpendPrivKey[:], []byte(message))
+	if err != nil {
+		return fmt.Errorf("signing failed: %w", err)
+	}
+
+	fmt.Printf("\nYour signature is:\n\n%s\n", hex.EncodeToString(sig))
+	return nil
+}
+
+func (c *CLI) cmdVerifyMsg() error {
+	fmt.Println("\nEnter the address:")
+	fmt.Print("\n> ")
+	addrLine, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read input: %w", err)
+	}
+	address := strings.TrimSpace(addrLine)
+	if address == "" {
+		return fmt.Errorf("address cannot be empty")
+	}
+
+	fmt.Println("\nEnter the message that was signed:")
+	fmt.Print("\n> ")
+	msgLine, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read input: %w", err)
+	}
+	message := strings.TrimSpace(msgLine)
+	if message == "" {
+		return fmt.Errorf("message cannot be empty")
+	}
+
+	fmt.Println("\nEnter the signature (hex):")
+	fmt.Print("\n> ")
+	sigLine, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read input: %w", err)
+	}
+	sigHex := strings.TrimSpace(sigLine)
+
+	spendPub, _, err := wallet.ParseAddress(address)
+	if err != nil {
+		return fmt.Errorf("invalid address: %w", err)
+	}
+
+	sigBytes, err := hex.DecodeString(sigHex)
+	if err != nil || len(sigBytes) != 64 {
+		return fmt.Errorf("invalid signature: must be 64 bytes hex-encoded")
+	}
+
+	if err := VerifyRust(spendPub[:], []byte(message), sigBytes); err != nil {
+		fmt.Println("\nSignature is INVALID.")
+		return nil
+	}
+
+	if c.noColor {
+		fmt.Println("\nSignature is VALID.")
+	} else {
+		fmt.Println("\n\033[32mSignature is VALID.\033[0m")
+	}
 	return nil
 }
 
@@ -1464,7 +1554,7 @@ func (c *CLI) cmdSave() error {
 	return nil
 }
 
-func (c *CLI) cmdVerify() {
+func (c *CLI) cmdCertify() {
 	fmt.Println("Verifying chain integrity (difficulty + timestamps)...")
 	chain := c.daemon.Chain()
 	height := chain.Height()
