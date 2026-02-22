@@ -337,6 +337,7 @@ func (c *CLI) Run() error {
 
 	// Daemon mode: just wait for shutdown signal
 	if c.daemonMode {
+		c.printLogo()
 		fmt.Println("Running in daemon mode (no interactive shell)")
 		fmt.Printf("  Peer ID: %s\n", c.daemon.Node().PeerID())
 		fmt.Printf("  Chain height: %d\n", c.daemon.Chain().Height())
@@ -393,16 +394,7 @@ func (c *CLI) Run() error {
 	}
 }
 
-func (c *CLI) printWelcome() {
-	height := c.daemon.Chain().Height()
-	spendable := c.wallet.SpendableBalance(height)
-	pending := c.wallet.PendingBalance(height)
-
-	balanceStr := formatAmount(spendable)
-	if pending > 0 {
-		balanceStr += fmt.Sprintf(" + %s pending", formatAmount(pending))
-	}
-
+func (c *CLI) printLogo() {
 	green := "\033[38;5;118m"
 	reset := "\033[0m"
 	if c.noColor {
@@ -429,8 +421,20 @@ func (c *CLI) printWelcome() {
 		fmt.Printf("%s%s%s\n", green, line, reset)
 		time.Sleep(40 * time.Millisecond)
 	}
-
 	fmt.Println()
+}
+
+func (c *CLI) printWelcome() {
+	height := c.daemon.Chain().Height()
+	spendable := c.wallet.SpendableBalance(height)
+	pending := c.wallet.PendingBalance(height)
+
+	balanceStr := formatAmount(spendable)
+	if pending > 0 {
+		balanceStr += fmt.Sprintf(" + %s pending", formatAmount(pending))
+	}
+
+	c.printLogo()
 	fmt.Printf("  Address: %s\n", c.wallet.Address())
 	fmt.Printf("  Balance: %s\n", balanceStr)
 	fmt.Printf("  Height:  %d\n", height)

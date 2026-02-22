@@ -51,6 +51,9 @@ type APIServer struct {
 	sendSem     chan struct{}
 	sendIdem    *idempotencyCache
 
+	// Route-scoped abuse controls for stateless signature verification.
+	verifyLimiter *perIPLimiter
+
 	// Wallet unlock brute-force controls.
 	unlockAttempts *unlockAttemptTracker
 }
@@ -197,6 +200,7 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 		sendLimiter:        newPerIPLimiter(rate.Limit(0.5), 2, 10*time.Minute), // ~1 req / 2s, burst 2
 		sendSem:            make(chan struct{}, 1),
 		sendIdem:           newIdempotencyCache(10*time.Minute, 1024),
+		verifyLimiter:      newPerIPLimiter(rate.Limit(5), 10, 10*time.Minute),
 		unlockAttempts:     newUnlockAttemptTracker(),
 	}
 	if len(password) > 0 {

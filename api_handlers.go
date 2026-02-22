@@ -174,6 +174,61 @@ func (s *APIServer) handleBannedPeers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleVerify verifies a signature against a Blocknet stealth address.
+// POST /api/verify
+func (s *APIServer) handleVerify(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !s.verifyLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "verify rate limit exceeded")
+		return
+	}
+
+	var req struct {
+		Address   string `json:"address"`
+		Message   string `json:"message"`
+		Signature string `json:"signature"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Address == "" {
+		writeError(w, http.StatusBadRequest, "address is required")
+		return
+	}
+	if req.Message == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+	if len(req.Message) > 1024 {
+		writeError(w, http.StatusBadRequest, "message must be <= 1024 bytes")
+		return
+	}
+	if req.Signature == "" {
+		writeError(w, http.StatusBadRequest, "signature is required")
+		return
+	}
+
+	spendPub, _, err := wallet.ParseAddress(req.Address)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid address")
+		return
+	}
+
+	sigBytes, err := hex.DecodeString(req.Signature)
+	if err != nil || len(sigBytes) != 64 {
+		writeError(w, http.StatusBadRequest, "invalid signature: must be 64 bytes hex-encoded")
+		return
+	}
+
+	if err := VerifyRust(spendPub[:], []byte(req.Message), sigBytes); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"valid": false})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"valid": true})
+}
+
 // ============================================================================
 // Wallet handlers (require loaded + unlocked wallet)
 // ============================================================================
@@ -263,6 +318,49 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"count":   len(entries),
 		"outputs": entries,
+	})
+}
+
+// handleSign signs an arbitrary message with the wallet's spend private key.
+// POST /api/wallet/sign
+func (s *APIServer) handleSign(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+	if s.wallet.IsViewOnly() {
+		writeError(w, http.StatusForbidden, "view-only wallet cannot sign")
+		return
+	}
+
+	var req struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Message == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+	if len(req.Message) > 1024 {
+		writeError(w, http.StatusBadRequest, "message must be <= 1024 bytes")
+		return
+	}
+
+	keys := s.wallet.Keys()
+	sig, err := SignRust(keys.SpendPrivKey[:], []byte(req.Message))
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"address":   s.wallet.Address(),
+		"signature": hex.EncodeToString(sig),
+		"message":   req.Message,
 	})
 }
 

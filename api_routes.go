@@ -2,7 +2,7 @@ package main
 
 import "net/http"
 
-// registerPublicRoutes adds read-only endpoints.
+// registerPublicRoutes adds stateless endpoints that don't require a wallet.
 // These are shared between --api (authenticated) and --explorer (public).
 func (s *APIServer) registerPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -12,6 +12,7 @@ func (s *APIServer) registerPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mempool/txs", s.handleMempoolTxs)
 	mux.HandleFunc("GET /api/peers", s.handlePeers)
 	mux.HandleFunc("GET /api/peers/banned", s.handleBannedPeers)
+	mux.HandleFunc("POST /api/verify", s.handleVerify)
 }
 
 // registerPrivateRoutes adds wallet, mining, and control endpoints.
@@ -24,6 +25,7 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/wallet/address", s.handleAddress)
 	mux.HandleFunc("GET /api/wallet/history", s.handleHistory)
 	mux.HandleFunc("POST /api/wallet/send", s.handleSend)
+	mux.HandleFunc("POST /api/wallet/sign", s.handleSign)
 	mux.HandleFunc("POST /api/wallet/lock", s.handleLock)
 	mux.HandleFunc("POST /api/wallet/unlock", s.handleUnlock)
 	mux.HandleFunc("POST /api/wallet/seed", s.handleSeed)
