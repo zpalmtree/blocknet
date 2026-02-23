@@ -73,9 +73,9 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 			if err := saveIdentity(envPath, key); err != nil {
 				return nil, fmt.Errorf("failed to save identity to BLOCKNET_P2P_KEY path %s: %w", envPath, err)
 			}
-			log.Printf("Generated new persistent identity: %s (saved to %s)", id.String()[:16]+"...", envPath)
+			// generated and saved
 		} else {
-			log.Printf("Loaded persistent identity: %s (from BLOCKNET_P2P_KEY=%s)", id.String()[:16]+"...", envPath)
+			// loaded from env
 		}
 		persistPath = envPath
 		rotationAge = 0
@@ -89,7 +89,7 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 				id = i
 				persistPath = xdgPath
 				rotationAge = 0
-				log.Printf("Loaded persistent identity: %s (from %s)", id.String()[:16]+"...", xdgPath)
+				// loaded from XDG config
 			}
 		}
 	}
@@ -218,14 +218,12 @@ func (im *IdentityManager) Rotate() (peer.ID, error) {
 	}
 
 	im.mu.Lock()
-	oldID := im.currentID
+	// oldID := im.currentID
 	im.currentKey = newKey
 	im.currentID = newID
 	im.createdAt = time.Now()
 	callback := im.onRotate
 	im.mu.Unlock()
-
-	log.Printf("Identity rotated from %s to %s", oldID, newID)
 
 	if callback != nil {
 		callback(newKey, newID)

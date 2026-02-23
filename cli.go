@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -24,6 +25,9 @@ import (
 
 	"golang.org/x/term"
 )
+
+//go:embed LICENSE
+var licenseText string
 
 // CLI handles the interactive command-line interface
 type CLI struct {
@@ -189,10 +193,9 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 			return nil, fmt.Errorf("wallet already exists at %s - delete it first to recover", cfg.WalletFile)
 		}
 
-		fmt.Println("Wallet Recovery")
-		fmt.Println("===============")
-		fmt.Println("Enter your 12-word recovery seed (words separated by spaces):")
-		fmt.Print("> ")
+		fmt.Printf("\n%s\n", cli.sectionHead("Recovery"))
+		fmt.Println("  Enter your 12-word recovery seed (words separated by spaces):")
+		fmt.Print("\n> ")
 
 		line, err := cli.reader.ReadString('\n')
 		if err != nil {
@@ -212,7 +215,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 			return nil, fmt.Errorf("invalid mnemonic (checksum failed)")
 		}
 
-		fmt.Println("\nMnemonic validated! Creating recovered wallet...")
+		fmt.Println("\n  Mnemonic validated. Creating recovered wallet...")
 	}
 
 	// Get password
@@ -220,13 +223,13 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	var err error
 
 	if walletExists {
-		fmt.Printf("Opening wallet: %s\n", cfg.WalletFile)
-		password, err = cli.promptPassword("Password: ")
+		fmt.Printf("\n  Opening wallet: %s\n", cfg.WalletFile)
+		password, err = cli.promptPassword("  Password: ")
 	} else {
 		if cfg.RecoverMode {
-			fmt.Printf("Creating recovered wallet: %s\n", cfg.WalletFile)
+			fmt.Printf("\n  Creating recovered wallet: %s\n", cfg.WalletFile)
 		} else {
-			fmt.Printf("Creating new wallet: %s\n", cfg.WalletFile)
+			fmt.Printf("\n  Creating new wallet: %s\n", cfg.WalletFile)
 		}
 		password, err = cli.promptNewPassword()
 	}
@@ -247,8 +250,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 			cancel()
 			return nil, fmt.Errorf("recovery failed: %w", err)
 		}
-		fmt.Println("Wallet recovered successfully!")
-		fmt.Println("Note: You will need to sync the blockchain to see your balance.")
+		fmt.Println("  Wallet recovered. Sync the blockchain to see your balance.")
 	} else {
 		w, err = wallet.LoadOrCreateWallet(cfg.WalletFile, password, walletCfg)
 		if err != nil {
@@ -294,15 +296,13 @@ func (c *CLI) Run() error {
 
 	go func() {
 		<-sigChan
-		fmt.Println("\nShutting down...")
 		if err := c.shutdown(); err != nil {
-			fmt.Printf("Warning: shutdown encountered errors: %v\n", err)
+			fmt.Printf("  Warning: %v\n", err)
 		}
 		os.Exit(0)
 	}()
 
-	// Start daemon
-	fmt.Println("Connecting to network...")
+	fmt.Println("  Connecting to network...")
 	if err := c.daemon.Start(); err != nil {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
@@ -314,9 +314,9 @@ func (c *CLI) Run() error {
 		if walletHeight > chainHeight {
 			removed := c.wallet.RewindToHeight(chainHeight)
 			if removed > 0 {
-				fmt.Printf("Chain reset detected: removed %d orphaned outputs, rewound wallet to height %d\n", removed, chainHeight)
+				fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, chainHeight)
 				if err := c.wallet.Save(); err != nil {
-					fmt.Printf("Warning: failed to persist rewound wallet: %v\n", err)
+					fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
 				}
 			}
 		}
@@ -326,6 +326,9 @@ func (c *CLI) Run() error {
 	if c.api != nil {
 		if err := c.api.Start(c.apiAddr); err != nil {
 			return fmt.Errorf("failed to start API: %w", err)
+		}
+		if isInsecureAPIBindAddress(c.apiAddr) {
+			fmt.Printf("\n%s\n  API bind address %q is not loopback\n  Place behind trusted network boundaries or TLS\n", c.errorHead("Warning"), c.apiAddr)
 		}
 	}
 
@@ -338,10 +341,18 @@ func (c *CLI) Run() error {
 	// Daemon mode: just wait for shutdown signal
 	if c.daemonMode {
 		c.printLogo()
-		fmt.Println("Running in daemon mode (no interactive shell)")
-		fmt.Printf("  Peer ID: %s\n", c.daemon.Node().PeerID())
-		fmt.Printf("  Chain height: %d\n", c.daemon.Chain().Height())
-		fmt.Println("Press Ctrl+C to stop")
+		fmt.Printf("  Address: %s\n", c.wallet.Address())
+		height := c.daemon.Chain().Height()
+		spendable := c.wallet.SpendableBalance(height)
+		pending := c.wallet.PendingBalance(height)
+		balanceStr := formatAmount(spendable)
+		if pending > 0 {
+			balanceStr += fmt.Sprintf(" + %s pending", formatAmount(pending))
+		}
+		fmt.Printf("  Balance: %s\n", balanceStr)
+		fmt.Printf("  Height:  %d\n", height)
+		fmt.Println()
+		fmt.Printf("  %s\n", c.sectionHead("Daemon mode (Ctrl+C to stop)"))
 
 		// Block until shutdown
 		<-c.ctx.Done()
@@ -389,7 +400,7 @@ func (c *CLI) Run() error {
 			if err.Error() == "quit" {
 				return c.shutdown()
 			}
-			fmt.Printf("Error: %v\n", err)
+			fmt.Printf("\n%s\n  %v\n", c.errorHead("Error"), err)
 		}
 	}
 }
@@ -439,7 +450,7 @@ func (c *CLI) printWelcome() {
 	fmt.Printf("  Balance: %s\n", balanceStr)
 	fmt.Printf("  Height:  %d\n", height)
 	fmt.Println()
-	fmt.Println("Type 'help' for available commands")
+	fmt.Println("  Type 'help' for available commands")
 }
 
 func fetchLatestVersion() (string, error) {
@@ -507,16 +518,15 @@ func (c *CLI) periodicVersionCheck() {
 }
 
 func (c *CLI) printUpdateNotice(latest string) {
-	yellow := "\033[33m"
-	bold := "\033[1m"
-	reset := "\033[0m"
+	amber := "\033[38;2;255;170;0m"
+	rst := "\033[0m"
 	if c.noColor {
-		yellow, bold, reset = "", "", ""
+		amber = ""
+		rst = ""
 	}
-	fmt.Printf("%s%s  ⚠ Update available: v%s (you have v%s)%s\n", bold, yellow, latest, Version, reset)
-	fmt.Printf("%s  Your node may stop communicating with the network soon.%s\n", yellow, reset)
-	fmt.Printf("%s  Download: https://github.com/blocknetprivacy/blocknet/releases/latest%s\n", yellow, reset)
-	fmt.Println()
+	fmt.Printf("\n%s# Update available%s\n", amber, rst)
+	fmt.Printf("  %sv%s -> v%s%s\n", amber, Version, latest, rst)
+	fmt.Printf("  %shttps://github.com/blocknetprivacy/blocknet/releases/latest%s\n", amber, rst)
 }
 
 func (c *CLI) executeCommand(line string) error {
@@ -578,6 +588,10 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdPurgeData()
 	case "certify":
 		c.cmdCertify()
+	case "license":
+		c.cmdLicense()
+	case "about":
+		c.cmdAbout()
 	case "quit", "exit", "q":
 		return fmt.Errorf("quit")
 	default:
@@ -588,7 +602,47 @@ func (c *CLI) executeCommand(line string) error {
 }
 
 func (c *CLI) cmdVersion() {
-	fmt.Println(Version)
+	fmt.Printf("\n%s\n", c.sectionHead("Version "+Version))
+}
+
+func (c *CLI) cmdLicense() {
+	fmt.Printf("\n%s\n", c.sectionHead("License"))
+	for _, line := range strings.Split(strings.TrimSpace(licenseText), "\n") {
+		fmt.Printf("  %s\n", line)
+	}
+}
+
+func (c *CLI) cmdAbout() {
+	fmt.Printf("\n%s\n", c.sectionHead("About"))
+	fmt.Printf("  Blocknet v%s\n", Version)
+	fmt.Println("  Zero-knowledge money. Made in USA.")
+	fmt.Println()
+	fmt.Println("  BSD 3-Clause License")
+	fmt.Println("  Copyright (c) 2026, Blocknet Privacy")
+	fmt.Println()
+	fmt.Println("  https://blocknetcrypto.com")
+	fmt.Println("  https://explorer.blocknetcrypto.com")
+	fmt.Println("  https://github.com/blocknetprivacy")
+	fmt.Printf("\n%s\n", c.sectionHead("Third-Party Libraries"))
+	fmt.Println("  libp2p/go-libp2p             MIT          P2P networking")
+	fmt.Println("  pion/webrtc                  MIT          WebRTC transport")
+	fmt.Println("  quic-go/quic-go              MIT          QUIC transport")
+	fmt.Println("  multiformats/go-multiaddr    MIT          Network addressing")
+	fmt.Println("  etcd-io/bbolt                MIT          Key-value storage")
+	fmt.Println("  lukechampine/blake3          MIT          Hashing")
+	fmt.Println("  uber-go/fx                   MIT          Dependency injection")
+	fmt.Println("  uber-go/zap                  MIT          Logging")
+	fmt.Println("  btcsuite/btcutil             ISC          Base58 encoding")
+	fmt.Println("  flynn/noise                  ISC          Noise protocol")
+	fmt.Println("  gorilla/websocket            ISC          WebSocket")
+	fmt.Println("  golang.org/x/crypto          BSD-3-Clause Argon2, SHA-3")
+	fmt.Println("  golang.org/x/term            BSD-3-Clause Terminal I/O")
+	fmt.Println("  golang.org/x/time            BSD-3-Clause Rate limiting")
+	fmt.Println("  google.golang.org/protobuf   BSD-3-Clause Serialization")
+	fmt.Println("  gogo/protobuf                BSD-3-Clause Serialization")
+	fmt.Println("  prometheus/client_golang     Apache-2.0   Metrics")
+	fmt.Println("  hashicorp/golang-lru         MPL-2.0      LRU cache")
+	fmt.Println("  libp2p/go-yamux              MPL-2.0      Stream multiplexing")
 }
 
 func (c *CLI) cmdHelp() {
@@ -597,36 +651,40 @@ func (c *CLI) cmdHelp() {
 		viewOnlyNote = " [VIEW-ONLY]"
 	}
 
+	sendNote := ""
+	if c.wallet.IsViewOnly() {
+		sendNote = " (disabled)"
+	}
+
 	fmt.Printf(`
-Commands:%s
-  status            Show node and wallet status
+%s%s
   balance           Show wallet balance
   address           Show receiving address
   send <addr> <amt> [memo|hex:<memo_hex>] Send funds with optional memo%s
   sign              Sign a message with your spend key
   verify            Verify a signed message against an address
   history           Show transaction history
-  peers             List connected peers
-  banned            List banned peers
-  export-peer       Export peer address to peer.txt
-  mining start|stop|threads Control mining
-  sync              Rescan blocks for outputs
   seed              Show wallet recovery seed (careful!)
   import            Create wallet file from seed or spend/view keys
   viewkeys          Create a view-only wallet file
   lock              Lock wallet
   unlock            Unlock wallet
   save              Save wallet to disk
+  sync              Rescan blocks for outputs
+
+%s
+  status            Show node and wallet status
+  peers             List connected peers
+  banned            List banned peers
+  export-peer       Export peer address to peer.txt
+  mining start|stop|threads Control mining
   certify           Check chain integrity (difficulty + timestamps)
   purge             Delete all blockchain data (cannot be undone)
   version           Print version
+  about             About this software
+  license           Show license
   quit              Exit (saves automatically)
-`, viewOnlyNote, func() string {
-		if c.wallet.IsViewOnly() {
-			return " (disabled)"
-		}
-		return ""
-	}())
+`, c.sectionHead("Wallet"), viewOnlyNote, sendNote, c.sectionHead("Daemon"))
 }
 
 func (c *CLI) cmdStatus() {
@@ -648,7 +706,7 @@ func (c *CLI) cmdStatus() {
 	}
 
 	fmt.Printf(`
-Node Status:
+%s
   Peer ID:     %s
   Peers:       %d
   Height:      %d
@@ -656,19 +714,21 @@ Node Status:
   Syncing:     %v
   Uptime:      %s
 
-Wallet Status:
+%s
   Type:        %s
   Balance:     %s
   Outputs:     %d unspent / %d total
   Synced To:   %d
   Address:     %s
 `,
+		c.sectionHead("Node"),
 		stats.PeerID,
 		stats.Peers,
 		stats.ChainHeight,
 		stats.BestHash,
 		stats.Syncing,
 		time.Since(c.startTime).Round(time.Second),
+		c.sectionHead("Wallet"),
 		walletType,
 		balanceStr,
 		unspent, total,
@@ -684,25 +744,24 @@ func (c *CLI) cmdBalance() {
 	pendingUnconfirmed := c.wallet.PendingUnconfirmedBalance()
 	total, unspent := c.wallet.OutputCount()
 
+	fmt.Printf("\n%s\n", c.sectionHead("Balance"))
 	fmt.Printf("  spendable:  %s\n", formatAmount(spendable))
 	fmt.Printf("  confirming: %s\n", formatAmount(pending))
 	if pendingUnconfirmed > 0 {
 		eta := time.Duration(wallet.SafeConfirmations+1) * wallet.EstimatedBlockInterval
 		fmt.Printf("  pending:    %s (est unlock ~%s)\n", formatAmount(pendingUnconfirmed), eta.Round(time.Minute))
 	}
-	fmt.Printf("Note: When you spend coins, the change can take a moment to return to your wallet.\n")
-
-	fmt.Printf("  (%d unspent outputs", unspent)
+	fmt.Printf("  total:      %s\n", formatAmount(spendable+pending))
+	fmt.Printf("  outputs:    %d unspent", unspent)
 	if total > unspent {
 		fmt.Printf(", %d spent", total-unspent)
 	}
-	fmt.Println(")")
+	fmt.Println()
 }
 
 func (c *CLI) cmdAddress() {
-	// For stealth addresses, we always give the same public address
-	// The one-time addresses are derived per-transaction by senders
-	fmt.Printf("Your address:\n%s\n", c.wallet.Address())
+	fmt.Printf("\n%s\n", c.sectionHead("Address"))
+	fmt.Printf("  %s\n", c.wallet.Address())
 }
 
 func (c *CLI) cmdSend(args []string) error {
@@ -748,9 +807,9 @@ func (c *CLI) cmdSend(args []string) error {
 	}
 	if resolvedInfo != nil && resolvedInfo.Verified {
 		if c.noColor {
-			fmt.Printf("Resolved %s -> %s [verified]\n", recipientInput, recipientAddr)
+			fmt.Printf("  Resolved %s -> %s [verified]\n", recipientInput, recipientAddr)
 		} else {
-			fmt.Printf("Resolved %s -> %s \033[32m✓ verified\033[0m\n", recipientInput, recipientAddr)
+			fmt.Printf("  Resolved %s -> %s \033[38;2;170;255;0m✓ verified\033[0m\n", recipientInput, recipientAddr)
 		}
 	}
 	spendPub, viewPub, err := wallet.ParseAddress(recipientAddr)
@@ -777,8 +836,8 @@ func (c *CLI) cmdSend(args []string) error {
 			formatAmount(spendable), formatAmount(amount))
 	}
 
-	// Build transaction first so we can show the fee in the confirmation prompt
-	fmt.Printf("\nBuilding transaction...\n")
+	fmt.Printf("\n%s\n", c.sectionHead("Send"))
+	fmt.Println("  Building transaction...")
 
 	recipient := wallet.Recipient{
 		SpendPubKey: spendPub,
@@ -799,8 +858,8 @@ func (c *CLI) cmdSend(args []string) error {
 	if resolvedInfo != nil {
 		recipientLabel = recipientInput
 	}
-	fmt.Printf("\nSend %s to %s?\n", formatAmount(amount), recipientLabel)
-	fmt.Printf("  Fee:    %s\n", formatAmount(result.Fee))
+	fmt.Printf("\n  Send %s to %s?\n", formatAmount(amount), recipientLabel)
+	fmt.Printf("  Fee:     %s\n", formatAmount(result.Fee))
 	if resolvedInfo != nil {
 		fmt.Printf("  Address: %s\n", recipientAddr)
 	}
@@ -808,22 +867,22 @@ func (c *CLI) cmdSend(args []string) error {
 		blocksUntilSpendable := uint64(wallet.SafeConfirmations + 1)
 		arrivalBlock := chainHeight + blocksUntilSpendable
 		eta := time.Duration(blocksUntilSpendable) * wallet.EstimatedBlockInterval
-		fmt.Printf("  Change: %s — spendable in ~%d blocks (block %d, ~%s from now)\n",
+		fmt.Printf("  Change:  %s — spendable in ~%d blocks (block %d, ~%s from now)\n",
 			formatAmount(result.Change), blocksUntilSpendable, arrivalBlock, formatDuration(eta))
 	}
 	if len(memo) > 0 {
 		if memoText, ok := memoTextIfPrintable(memo); ok {
-			fmt.Printf("  Memo:   %s\n", strconv.QuoteToASCII(memoText))
+			fmt.Printf("  Memo:    %s\n", strconv.QuoteToASCII(memoText))
 		} else {
-			fmt.Printf("  Memo:   %s\n", strings.ToUpper(hex.EncodeToString(memo)))
+			fmt.Printf("  Memo:    %s\n", strings.ToUpper(hex.EncodeToString(memo)))
 		}
 	}
-	fmt.Print("Confirm [y/N]: ")
+	fmt.Print("  Confirm [y/N]: ")
 
 	confirm, _ := c.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 		c.wallet.ReleaseInputLease(result.InputLease)
-		fmt.Println("Cancelled")
+		fmt.Println("  Cancelled")
 		return nil
 	}
 
@@ -853,11 +912,12 @@ func (c *CLI) cmdSend(args []string) error {
 		c.wallet.AddPendingCredit(result.TxID, result.Change)
 	}
 	if err := c.wallet.Save(); err != nil {
-		// Don't fail the send after broadcast; just warn about persistence.
-		fmt.Printf("Warning: wallet persistence failed after send %x: %v\n", result.TxID, err)
+		fmt.Printf("  Warning: wallet persistence failed: %v\n", err)
 	}
 
-	fmt.Printf("Transaction sent: %s\nExplorer: https://explorer.blocknetcrypto.com/tx/%s\n", fmt.Sprintf("%x", result.TxID), fmt.Sprintf("%x", result.TxID))
+	txHex := fmt.Sprintf("%x", result.TxID)
+	fmt.Printf("  Sent: %s\n", txHex)
+	fmt.Printf("  Explorer: https://explorer.blocknetcrypto.com/tx/%s\n", txHex)
 
 	return nil
 }
@@ -867,7 +927,8 @@ func (c *CLI) cmdSign() error {
 		return fmt.Errorf("view-only wallet cannot sign")
 	}
 
-	fmt.Println("\nEnter the text to sign, press ENTER when you're done.")
+	fmt.Printf("\n%s\n", c.sectionHead("Sign"))
+	fmt.Println("  Enter the text to sign, press ENTER when you're done.")
 	fmt.Print("\n> ")
 
 	line, err := c.reader.ReadString('\n')
@@ -888,12 +949,13 @@ func (c *CLI) cmdSign() error {
 		return fmt.Errorf("signing failed: %w", err)
 	}
 
-	fmt.Printf("\nYour signature is:\n\n%s\n", hex.EncodeToString(sig))
+	fmt.Printf("\n  %s\n", hex.EncodeToString(sig))
 	return nil
 }
 
 func (c *CLI) cmdVerifyMsg() error {
-	fmt.Println("\nEnter the address:")
+	fmt.Printf("\n%s\n", c.sectionHead("Verify"))
+	fmt.Println("  Enter the address:")
 	fmt.Print("\n> ")
 	addrLine, err := c.reader.ReadString('\n')
 	if err != nil {
@@ -904,7 +966,7 @@ func (c *CLI) cmdVerifyMsg() error {
 		return fmt.Errorf("address cannot be empty")
 	}
 
-	fmt.Println("\nEnter the message that was signed:")
+	fmt.Println("  Enter the message that was signed:")
 	fmt.Print("\n> ")
 	msgLine, err := c.reader.ReadString('\n')
 	if err != nil {
@@ -915,7 +977,7 @@ func (c *CLI) cmdVerifyMsg() error {
 		return fmt.Errorf("message cannot be empty")
 	}
 
-	fmt.Println("\nEnter the signature (hex):")
+	fmt.Println("  Enter the signature (hex):")
 	fmt.Print("\n> ")
 	sigLine, err := c.reader.ReadString('\n')
 	if err != nil {
@@ -934,15 +996,11 @@ func (c *CLI) cmdVerifyMsg() error {
 	}
 
 	if err := SchnorrVerify(spendPub[:], []byte(message), sigBytes); err != nil {
-		fmt.Println("\nSignature is INVALID.")
+		fmt.Printf("\n  %s\n", c.errorHead("Signature is INVALID"))
 		return nil
 	}
 
-	if c.noColor {
-		fmt.Println("\nSignature is VALID.")
-	} else {
-		fmt.Println("\n\033[32mSignature is VALID.\033[0m")
-	}
+	fmt.Printf("\n  %s\n", c.sectionHead("Signature is VALID"))
 	return nil
 }
 
@@ -952,7 +1010,8 @@ func (c *CLI) cmdHistory() {
 	sendRecords := c.wallet.SendRecords()
 
 	if len(outputs) == 0 && len(sendRecords) == 0 {
-		fmt.Println("No transaction history")
+		fmt.Printf("\n%s\n", c.sectionHead("History"))
+		fmt.Println("  No transactions yet")
 		return
 	}
 
@@ -1043,7 +1102,7 @@ func (c *CLI) cmdHistory() {
 		return events[i].timestamp < events[j].timestamp
 	})
 
-	fmt.Println("\nTransaction History:")
+	fmt.Printf("\n%s\n", c.sectionHead("History"))
 	for _, evt := range events {
 		tm := time.Unix(evt.timestamp, 0)
 		dateStr := tm.Format("060102-15:04:05")
@@ -1062,13 +1121,13 @@ func (c *CLI) cmdHistory() {
 		if len(evt.memo) > 0 {
 			memoHex := hex.EncodeToString(evt.memo)
 			if memoText, ok := memoTextIfPrintable(evt.memo); ok {
-				memoStr = "\n - memo:" + strconv.QuoteToASCII(memoText)
+				memoStr = "\n    memo: " + strconv.QuoteToASCII(memoText)
 			} else {
-				memoStr = "\n - memo hex:" + memoHex
+				memoStr = "\n    memo: " + memoHex
 			}
 		}
 
-		fmt.Printf("%s %s%-3s%s %-16s %x%s%s\n",
+		fmt.Printf("  %s %s%-3s%s %-16s %x%s%s\n",
 			dateStr,
 			evt.color,
 			evt.direction,
@@ -1113,35 +1172,39 @@ func (c *CLI) cmdPeers() {
 	peers := c.daemon.Node().Peers()
 	banned := c.daemon.Node().BannedCount()
 
+	fmt.Printf("\n%s", c.sectionHead("Peers"))
 	if len(peers) == 0 {
-		fmt.Println("No connected peers")
+		fmt.Println(" (0)")
+		fmt.Println("  None connected")
 	} else {
-		fmt.Printf("\nConnected peers (%d):\n", len(peers))
+		fmt.Printf(" (%d)\n", len(peers))
 		for _, p := range peers {
 			fmt.Printf("  %s\n", p.String())
 		}
 	}
 
 	if banned > 0 {
-		fmt.Printf("\nBanned peers: %d (use 'banned' to see details)\n", banned)
+		fmt.Printf("\n  %d banned (use 'banned' to see details)\n", banned)
 	}
 }
 
 func (c *CLI) cmdBanned() {
 	bans := c.daemon.Node().GetBannedPeers()
+	fmt.Printf("\n%s", c.sectionHead("Banned"))
 	if len(bans) == 0 {
-		fmt.Println("No banned peers")
+		fmt.Println(" (0)")
+		fmt.Println("  None")
 		return
 	}
 
-	fmt.Printf("\nBanned peers (%d):\n", len(bans))
+	fmt.Printf(" (%d)\n", len(bans))
 	for _, ban := range bans {
 		durStr := "permanent"
 		if !ban.Permanent {
 			remaining := time.Until(ban.ExpiresAt).Round(time.Minute)
 			durStr = fmt.Sprintf("expires in %s", remaining)
 		}
-		fmt.Printf("  %s\n    Reason: %s\n    Banned: %dx, %s\n",
+		fmt.Printf("  %s\n    reason: %s\n    count:  %dx, %s\n",
 			ban.PeerID.String(),
 			ban.Reason,
 			ban.BanCount,
@@ -1155,11 +1218,12 @@ func (c *CLI) cmdExportPeer() error {
 		return err
 	}
 
-	fmt.Println("\nPeer addresses written to peer.txt")
-	fmt.Println("Share this file or its contents with other nodes.")
-	fmt.Println("\nOther nodes can connect with:")
+	fmt.Printf("\n%s\n", c.sectionHead("Export"))
+	fmt.Println("  Peer addresses written to peer.txt")
+	fmt.Println("  Share this file or its contents with other nodes.")
+	fmt.Println("\n  Other nodes can connect with:")
 	for _, addr := range c.daemon.Node().FullMultiaddrs() {
-		fmt.Printf("  ./blocknet %s\n", addr)
+		fmt.Printf("    ./blocknet %s\n", addr)
 	}
 	return nil
 }
@@ -1170,43 +1234,38 @@ func (c *CLI) cmdMining(args []string) error {
 			stats := c.daemon.MinerStats()
 			hashRate := c.daemon.Miner().HashRate()
 			elapsed := time.Since(stats.StartTime).Round(time.Second)
-			fmt.Printf("Mining: active (%s)\n", elapsed)
+			fmt.Printf("\n%s — active (%s)\n", c.sectionHead("Mining"), elapsed)
 			fmt.Printf("  Hashrate:     %.2f H/s\n", hashRate)
 			fmt.Printf("  Total hashes: %d\n", stats.HashCount)
 			fmt.Printf("  Chain height: %d\n", c.daemon.Chain().Height())
 		} else {
-			fmt.Println("Mining: stopped")
+			fmt.Printf("\n%s — stopped\n", c.sectionHead("Mining"))
 		}
 		return nil
 	}
 
 	switch args[0] {
 	case "start":
+		fmt.Printf("\n%s\n", c.sectionHead("Mining"))
 		if c.daemon.IsMining() {
-			fmt.Println("Mining already running")
+			fmt.Println("  Already running")
 			return nil
 		}
 		threads := c.daemon.Miner().Threads()
-		threadLabel := "threads"
-		if threads == 1 {
-			threadLabel = "thread"
-		}
-		fmt.Printf("Starting miner (%d %s)...\n", threads, threadLabel)
-		fmt.Println("  Note: Argon2id PoW uses ~2GB RAM per thread")
-		fmt.Println("  First hash may take 10-30 seconds...")
 		c.daemon.StartMining()
-		fmt.Println("Mining started! Type 'mining' to see stats")
+		fmt.Printf("  Started with %d threads (~%dGB RAM)\n", threads, threads*2)
 	case "stop":
+		fmt.Printf("\n%s\n", c.sectionHead("Mining"))
 		if !c.daemon.IsMining() {
-			fmt.Println("Mining not running")
+			fmt.Println("  Not running")
 			return nil
 		}
-		fmt.Println("Stopping miner...")
 		c.daemon.StopMining()
-		fmt.Println("Mining stopped")
+		fmt.Println("  Stopped")
 	case "threads", "thrads", "thread", "thrad", "t":
+		fmt.Printf("\n%s\n", c.sectionHead("Mining"))
 		if len(args) < 2 {
-			fmt.Printf("Mining threads: %d\n", c.daemon.Miner().Threads())
+			fmt.Printf("  Threads: %d\n", c.daemon.Miner().Threads())
 			return nil
 		}
 		n, err := strconv.Atoi(args[1])
@@ -1214,9 +1273,9 @@ func (c *CLI) cmdMining(args []string) error {
 			return fmt.Errorf("usage: mining threads <N> (N >= 1)")
 		}
 		c.daemon.Miner().SetThreads(n)
-		fmt.Printf("Mining threads set to %d (uses ~%dGB RAM)\n", n, n*2)
+		fmt.Printf("  Threads set to %d (~%dGB RAM)\n", n, n*2)
 		if c.daemon.IsMining() {
-			fmt.Println("  Applying now (current block attempt will restart)")
+			fmt.Println("  Restarting current block attempt")
 		}
 	default:
 		return fmt.Errorf("usage: mining [start|stop|threads <N>]")
@@ -1228,14 +1287,15 @@ func (c *CLI) cmdSync() {
 	chainHeight := c.daemon.Chain().Height()
 	walletHeight := c.wallet.SyncedHeight()
 
-	fmt.Printf("Known blocks:  %d\n", chainHeight)
-	fmt.Printf("Blocks scanned: %d\n", walletHeight)
+	fmt.Printf("\n%s\n", c.sectionHead("Sync"))
+	fmt.Printf("  Known blocks:   %d\n", chainHeight)
+	fmt.Printf("  Blocks scanned: %d\n", walletHeight)
 
 	if walletHeight >= chainHeight {
 		return
 	}
 
-	fmt.Printf("Scanning %d blocks...\n", chainHeight-walletHeight)
+	fmt.Printf("  Scanning %d blocks...\n", chainHeight-walletHeight)
 
 	// Snapshot blocks under a single chain read lock so we don't pay RWMutex
 	// writer-preference overhead per height while the node is ingesting blocks.
@@ -1253,21 +1313,28 @@ func (c *CLI) cmdSync() {
 		h := block.Header.Height
 		scannedTo = h
 		if found > 0 || spent > 0 {
-			fmt.Printf("  Block %d: +%d outputs, %d spent\n", h, found, spent)
+			fmt.Printf("    Block %d: +%d outputs, %d spent\n", h, found, spent)
 		}
 	}
 
 	if scannedTo > walletHeight {
 		c.wallet.SetSyncedHeight(scannedTo)
-		fmt.Printf("Wallet synced to height %d\n", scannedTo)
+		fmt.Printf("  Wallet synced to height %d\n", scannedTo)
 	}
 }
 
 func (c *CLI) cmdSeed() error {
-	fmt.Println("\nWARNING: Your recovery seed controls all funds!")
-	fmt.Println("Anyone with this seed can steal your coins.")
-	fmt.Println("Never share it, never enter it online.")
-	fmt.Print("\nShow recovery seed? [y/N]: ")
+	amber := "\033[38;2;255;170;0m"
+	rst := "\033[0m"
+	if c.noColor {
+		amber = ""
+		rst = ""
+	}
+	fmt.Printf("\n%s%s%s\n", amber, "# Seed", rst)
+	fmt.Printf("  %sWARNING: Your recovery seed controls all funds.%s\n", amber, rst)
+	fmt.Printf("  %sAnyone with this seed can steal your coins.%s\n", amber, rst)
+	fmt.Printf("  %sNever share it. Never enter it online.%s\n", amber, rst)
+	fmt.Print("\n  Show recovery seed? [y/N]: ")
 
 	confirm, _ := c.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
@@ -1279,14 +1346,11 @@ func (c *CLI) cmdSeed() error {
 		return fmt.Errorf("failed to read mnemonic: %w", err)
 	}
 	if mnemonic == "" {
-		fmt.Println("\nNo recovery seed available (wallet may predate BIP39 support)")
+		fmt.Println("  No recovery seed available (wallet may predate BIP39 support)")
 		return nil
 	}
 
-	fmt.Println("\n╔══════════════════════════════════════════════════════╗")
-	fmt.Println("║           12-WORD RECOVERY SEED (BIP39)              ║")
-	fmt.Println("╠══════════════════════════════════════════════════════╣")
-
+	fmt.Println()
 	words := strings.Fields(mnemonic)
 	for i := 0; i < len(words); i += 4 {
 		end := i + 4
@@ -1297,21 +1361,21 @@ func (c *CLI) cmdSeed() error {
 		for j := i; j < end; j++ {
 			row += fmt.Sprintf("%2d.%-10s ", j+1, words[j])
 		}
-		fmt.Printf("%s\n", fmt.Sprintf("%-52s", row))
+		fmt.Printf("  %s\n", strings.TrimRight(row, " "))
 	}
 
-	fmt.Println("╚══════════════════════════════════════════════════════╝")
-	fmt.Println("\nWrite these words down and store them safely!")
-	fmt.Println("You can recover your wallet with: blocknet --recover")
+	fmt.Println()
+	fmt.Println("  Write these words down and store them safely.")
+	fmt.Println("  Recover with: blocknet --recover")
 
 	return nil
 }
 
 func (c *CLI) cmdImport() error {
-	fmt.Println("\nImport type:")
+	fmt.Printf("\n%s\n", c.sectionHead("Import"))
 	fmt.Println("  1) 12-word recovery seed")
 	fmt.Println("  2) spend-key/view-key (hex private keys)")
-	fmt.Print("\nChoose [1/2]: ")
+	fmt.Print("\n  Choose [1/2]: ")
 
 	choiceLine, err := c.reader.ReadString('\n')
 	if err != nil {
@@ -1330,7 +1394,7 @@ func (c *CLI) cmdImport() error {
 }
 
 func (c *CLI) cmdImportFromMnemonic() error {
-	fmt.Println("\nInput the 12 words of your seed:")
+	fmt.Println("  Input the 12 words of your seed:")
 	fmt.Print("\n> ")
 
 	line, err := c.reader.ReadString('\n')
@@ -1404,7 +1468,7 @@ func (c *CLI) cmdImportFromKeys() error {
 }
 
 func (c *CLI) importWalletTargetPath() (base string, walletPath string, err error) {
-	fmt.Println("\nInput the name of this wallet:")
+	fmt.Println("  Input the name of this wallet:")
 	fmt.Print("\n> ")
 	nameLine, err := c.reader.ReadString('\n')
 	if err != nil {
@@ -1427,7 +1491,7 @@ func (c *CLI) importWalletTargetPath() (base string, walletPath string, err erro
 
 func (c *CLI) promptHex32(prompt string) ([32]byte, error) {
 	var out [32]byte
-	fmt.Print("\n" + prompt)
+	fmt.Print("  " + prompt)
 	line, err := c.reader.ReadString('\n')
 	if err != nil {
 		return out, err
@@ -1449,8 +1513,8 @@ func printImportedWalletPath(base, walletPath string) error {
 		resolvedPath = walletPath
 	}
 
-	fmt.Printf("\nname: %s created!\n", base)
-	fmt.Printf("path: %s\n", resolvedPath)
+	fmt.Printf("\n  name: %s\n", base)
+	fmt.Printf("  path: %s\n", resolvedPath)
 	return nil
 }
 
@@ -1479,15 +1543,16 @@ func (c *CLI) cmdViewKeys() error {
 
 	viewFile := c.viewWalletFilename()
 
-	fmt.Println("\nThis will create a view-only wallet that can monitor incoming")
-	fmt.Println("funds but CANNOT spend. Anyone with this file can see your")
-	fmt.Println("balance and transaction history.")
-	fmt.Printf("\nFile: %s\n", viewFile)
+	fmt.Printf("\n%s\n", c.sectionHead("View Keys"))
+	fmt.Println("  This will create a view-only wallet that can monitor incoming")
+	fmt.Println("  funds but CANNOT spend. Anyone with this file can see your")
+	fmt.Println("  balance and transaction history.")
+	fmt.Printf("\n  File: %s\n", viewFile)
 
 	if fileExists(viewFile) {
-		fmt.Print("\nFile already exists. Overwrite? [y/N]: ")
+		fmt.Print("\n  File already exists. Overwrite? [y/N]: ")
 	} else {
-		fmt.Print("\nCreate view-only wallet? [y/N]: ")
+		fmt.Print("\n  Create view-only wallet? [y/N]: ")
 	}
 
 	confirm, _ := c.reader.ReadString('\n')
@@ -1507,21 +1572,22 @@ func (c *CLI) cmdViewKeys() error {
 		return fmt.Errorf("failed to create view-only wallet: %w", err)
 	}
 
-	fmt.Printf("\nView-only wallet saved to %s\n", viewFile)
-	fmt.Println("Load it with:")
-	fmt.Printf("  blocknet --wallet %s\n", viewFile)
+	fmt.Printf("\n  View-only wallet saved to %s\n", viewFile)
+	fmt.Println("  Load it with:")
+	fmt.Printf("    blocknet --wallet %s\n", viewFile)
 
 	return nil
 }
 
 func (c *CLI) cmdLock() {
 	c.locked = true
-	fmt.Println("Wallet locked")
+	fmt.Printf("\n%s\n", c.sectionHead("Locked"))
 }
 
 func (c *CLI) cmdUnlock() error {
 	if !c.locked {
-		fmt.Println("Wallet is not locked")
+		fmt.Printf("\n%s\n", c.sectionHead("Unlocked"))
+		fmt.Println("  Already unlocked")
 		return nil
 	}
 
@@ -1542,7 +1608,7 @@ func (c *CLI) cmdUnlock() error {
 	}
 
 	c.locked = false
-	fmt.Println("Wallet unlocked")
+	fmt.Printf("\n%s\n", c.sectionHead("Unlocked"))
 	return nil
 }
 
@@ -1550,57 +1616,54 @@ func (c *CLI) cmdSave() error {
 	if err := c.wallet.Save(); err != nil {
 		return fmt.Errorf("failed to save wallet: %w", err)
 	}
-	fmt.Println("Wallet saved")
+	fmt.Printf("\n%s\n", c.sectionHead("Saved"))
 	return nil
 }
 
 func (c *CLI) cmdCertify() {
-	fmt.Println("Verifying chain integrity (difficulty + timestamps)...")
+	fmt.Printf("\n%s\n", c.sectionHead("Certify"))
 	chain := c.daemon.Chain()
 	height := chain.Height()
-	fmt.Printf("Checking %d blocks...\n", height)
+	fmt.Printf("  Checking %d blocks...\n", height)
 
 	violations := chain.VerifyChain()
 	if len(violations) == 0 {
-		fmt.Printf("Chain is clean. All %d blocks have correct difficulty and timestamps.\n", height)
+		fmt.Printf("  Chain is clean. All %d blocks passed.\n", height)
 		return
 	}
 
-	fmt.Printf("\nFOUND %d VIOLATION(S):\n", len(violations))
+	fmt.Printf("\n  %s\n", c.errorHead(fmt.Sprintf("%d violation(s)", len(violations))))
 	for _, v := range violations {
-		fmt.Printf("  Height %d: %s\n", v.Height, v.Message)
+		fmt.Printf("    Height %d: %s\n", v.Height, v.Message)
 	}
-	fmt.Println("\nBlocks with violations may have been injected without proper validation.")
-	fmt.Println("Consider purging chain data and re-syncing from trusted peers.")
+	fmt.Println("\n  Consider purging chain data and re-syncing from trusted peers.")
 }
 
 func (c *CLI) cmdPurgeData() error {
-	fmt.Printf("\nWARNING: This will delete all blockchain data from %s\n", c.dataDir)
-	fmt.Println("This includes all blocks, chain state, and sync progress.")
-	fmt.Println("Your wallet will NOT be deleted.")
-	fmt.Println("This action CANNOT be undone.")
-	fmt.Print("\nConfirm purge? [y/N]: ")
+	fmt.Printf("\n%s\n", c.errorHead("Purge"))
+	fmt.Printf("  This will delete all blockchain data from %s\n", c.dataDir)
+	fmt.Println("  This includes all blocks, chain state, and sync progress.")
+	fmt.Println("  Your wallet will NOT be deleted.")
+	fmt.Println("  This action CANNOT be undone.")
+	fmt.Print("\n  Confirm purge? [y/N]: ")
 
 	confirm, _ := c.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-		fmt.Println("Cancelled")
+		fmt.Println("  Cancelled")
 		return nil
 	}
 
-	// Stop daemon first to release database locks
-	fmt.Println("Stopping daemon...")
+	fmt.Println("  Stopping daemon...")
 	if err := c.daemon.Stop(); err != nil {
 		return fmt.Errorf("failed to stop daemon before purge: %w", err)
 	}
 
-	// Remove data directory
-	fmt.Printf("Purging blockchain data from %s...\n", c.dataDir)
+	fmt.Printf("  Purging blockchain data from %s...\n", c.dataDir)
 	if err := os.RemoveAll(c.dataDir); err != nil {
 		return fmt.Errorf("failed to purge blockchain data: %w", err)
 	}
 
-	fmt.Println("Blockchain data purged successfully")
-	fmt.Println("Restart the application to resync from genesis")
+	fmt.Println("  Blockchain data purged. Restart to resync from genesis.")
 
 	// Exit after purge since daemon is stopped
 	return fmt.Errorf("quit")
@@ -1612,19 +1675,20 @@ func (c *CLI) shutdown() error {
 		c.api.Stop()
 	}
 
+	fmt.Printf("\n%s\n", c.sectionHead("Shutdown"))
 	if c.wallet != nil {
-		fmt.Println("Saving wallet...")
+		fmt.Println("  Saving wallet...")
 		if err := c.wallet.Save(); err != nil {
-			fmt.Printf("Warning: failed to save wallet: %v\n", err)
+			fmt.Printf("  Warning: failed to save wallet: %v\n", err)
 		}
 	}
 
-	fmt.Println("Stopping daemon...")
+	fmt.Println("  Stopping daemon...")
 	if err := c.daemon.Stop(); err != nil {
 		return fmt.Errorf("failed to stop daemon: %w", err)
 	}
 
-	fmt.Println("Goodbye!")
+	fmt.Println("  Done")
 	return nil
 }
 
@@ -1649,7 +1713,7 @@ func (c *CLI) promptPassword(prompt string) ([]byte, error) {
 }
 
 func (c *CLI) promptNewPassword() ([]byte, error) {
-	password, err := c.promptPassword("Enter new password: ")
+	password, err := c.promptPassword("  Enter new password: ")
 	if err != nil {
 		return nil, err
 	}
@@ -1659,7 +1723,7 @@ func (c *CLI) promptNewPassword() ([]byte, error) {
 		return nil, fmt.Errorf("password must be at least 3 characters")
 	}
 
-	confirm, err := c.promptPassword("Confirm password: ")
+	confirm, err := c.promptPassword("  Confirm password: ")
 	if err != nil {
 		wipeBytes(password)
 		return nil, err
@@ -1674,6 +1738,20 @@ func (c *CLI) promptNewPassword() ([]byte, error) {
 	}
 
 	return password, nil
+}
+
+func (c *CLI) sectionHead(label string) string {
+	if c.noColor {
+		return "# " + label
+	}
+	return "\033[38;2;170;255;0m#\033[0m " + label
+}
+
+func (c *CLI) errorHead(label string) string {
+	if c.noColor {
+		return "# " + label
+	}
+	return "\033[38;2;255;0;170m#\033[0m " + label
 }
 
 // Helpers
@@ -1826,7 +1904,7 @@ func (c *CLI) autoScanBlocks() {
 			found, spent := scanner.ScanBlock(blockData)
 			if found > 0 || spent > 0 {
 				if err := w.Save(); err != nil {
-					fmt.Printf("Warning: failed to persist wallet scan updates: %v\n", err)
+					fmt.Printf("  Warning: failed to persist wallet scan updates: %v\n", err)
 				}
 			}
 		}
@@ -1836,11 +1914,6 @@ func (c *CLI) autoScanBlocks() {
 // watchMinedBlocks prints explorer links for blocks we mined
 func (c *CLI) watchMinedBlocks() {
 	minedCh := c.daemon.SubscribeMinedBlocks()
-
-	// ANSI colors - #AAFF00 in 24-bit true color
-	green := "\033[38;2;170;255;0m"
-	underline := "\033[4m"
-	reset := "\033[0m"
 
 	for {
 		select {
@@ -1852,14 +1925,8 @@ func (c *CLI) watchMinedBlocks() {
 			}
 			height := block.Header.Height
 			url := fmt.Sprintf("https://explorer.blocknetcrypto.com/block/%d", height)
-
-			if c.noColor {
-				fmt.Printf("\nYou mined block %d! View: %s\n", height, url)
-			} else {
-				fmt.Printf("\n%sYou mined block %d!%s View: %s%s%s%s\n",
-					green, height, reset,
-					green, underline, url, reset)
-			}
+			fmt.Printf("\n%s\n", c.sectionHead(fmt.Sprintf("Mined block %d", height)))
+			fmt.Printf("  %s\n", url)
 		}
 	}
 }

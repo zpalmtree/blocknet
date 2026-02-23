@@ -286,17 +286,15 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	var checkpointsMaxHeight uint64
 	if !cfg.FullSync {
 		cpPath := checkpointsPath(cfg.DataDir)
-		if downloaded, err := ensureCheckpointsFile(cpPath); err != nil {
-			log.Printf("Warning: checkpoints unavailable: %v", err)
-		} else if downloaded {
-			log.Printf("Downloaded checkpoints: %s", cpPath)
+		if _, err := ensureCheckpointsFile(cpPath); err != nil {
+			// best-effort; checkpoint download failures are non-fatal
 		}
 		if cps, heights, maxH, err := loadCheckpointsFile(cpPath); err == nil {
 			checkpoints = cps
 			checkpointHeights = heights
 			checkpointsMaxHeight = maxH
 		} else if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("Warning: failed to read checkpoints file %s: %v", cpPath, err)
+			// non-fatal: proceed without checkpoints
 		}
 	}
 
@@ -315,21 +313,13 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		} else {
 			var usedHeight uint64
 			violations, usedHeight = chain.VerifyChainWithCheckpoints(checkpoints, checkpointHeights)
-			if usedHeight > 0 {
-				log.Printf("Checkpoint verify: using height %d (out of %d checkpoint(s))", usedHeight, len(checkpoints))
-			} else {
-				log.Printf("Checkpoint verify: no matching checkpoint found; falling back to full verify")
+			if usedHeight == 0 {
 				violations = chain.VerifyChain()
 			}
 		}
 		if len(violations) > 0 {
 			first := violations[0].Height
 			truncateTo := first - 1
-			log.Printf("Chain integrity check: %d violation(s), first at height %d", len(violations), first)
-			for _, v := range violations {
-				log.Printf("  Height %d: %s", v.Height, v.Message)
-			}
-			log.Printf("Truncating chain from height %d to %d and re-syncing", chain.Height(), truncateTo)
 			if err := chain.TruncateToHeight(truncateTo); err != nil {
 				if closeErr := chain.Close(); closeErr != nil {
 					log.Printf("Warning: failed to close chain after truncate error: %v", closeErr)
@@ -337,9 +327,6 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 				cancel()
 				return nil, fmt.Errorf("failed to truncate chain: %w", err)
 			}
-			log.Printf("Chain truncated to height %d, will re-sync the rest from peers", truncateTo)
-		} else {
-			log.Printf("Chain integrity verified: %d blocks OK", chain.Height())
 		}
 	}
 
@@ -549,25 +536,19 @@ func (d *Daemon) Start() error {
 	if d.explorerAddr != "" {
 		explorer := NewExplorer(d)
 		go func() {
-			log.Printf("Explorer listening on %s", d.explorerAddr)
 			if err := explorer.Start(d.explorerAddr); err != nil {
 				log.Printf("Explorer error: %v", err)
 			}
 		}()
 	}
 
-	log.Printf("Daemon started")
-	log.Printf("  Peer ID: %s", d.node.PeerID())
-	log.Printf("  Listening: %v", d.node.Addrs())
-	log.Printf("  Chain height: %d", d.chain.Height())
+	
 
 	return nil
 }
 
 // Stop gracefully shuts down the daemon
 func (d *Daemon) Stop() error {
-	log.Println("Shutting down daemon...")
-
 	d.cancel()
 
 	// Stop miner
@@ -586,7 +567,6 @@ func (d *Daemon) Stop() error {
 		return err
 	}
 
-	log.Println("Daemon stopped")
 	return nil
 }
 
@@ -606,7 +586,6 @@ func (d *Daemon) StartMining() {
 	}()
 
 	d.miner.Start(d.ctx, blockChan)
-	log.Println("Mining started")
 }
 
 // handleMinedBlock processes a block we mined
@@ -652,7 +631,6 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	}
 
 	d.updateMempoolForAcceptedMainChain(&block, prevBest)
-	log.Printf("Accepted block at height %d from %s", block.Header.Height, from.String()[:8])
 
 	// Relay to other peers (exclude sender)
 	d.node.RelayBlock(from, data)

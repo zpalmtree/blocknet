@@ -1,8 +1,6 @@
 package p2p
 
 import (
-	"log"
-
 	"github.com/libp2p/go-libp2p/core/control"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -25,11 +23,7 @@ func (g *BanGater) InterceptPeerDial(pid peer.ID) bool {
 	if g.isBanned == nil {
 		return true
 	}
-	banned := g.isBanned(pid)
-	if banned {
-		log.Printf("GATER: Blocking dial to banned peer %s", pid.String()[:16])
-	}
-	return !banned
+	return !g.isBanned(pid)
 }
 
 // InterceptAddrDial tests whether we're permitted to dial the address

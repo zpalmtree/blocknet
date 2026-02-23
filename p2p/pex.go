@@ -323,11 +323,7 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 	if err != nil {
 		return
 	}
-	defer func() {
-		if err := s.Close(); err != nil {
-			log.Printf("PEX failed to close exchange stream with %s: %v", p, err)
-		}
-	}()
+	defer s.Close()
 
 	// Send GetPeers request
 	if err := writeMessage(s, PEXMsgGetPeers, nil); err != nil {
@@ -571,11 +567,7 @@ func (pex *PeerExchange) tryConnect(pid peer.ID, addrs []multiaddr.Multiaddr) {
 
 // HandleStream handles incoming PEX protocol streams
 func (pex *PeerExchange) HandleStream(s network.Stream) {
-	defer func() {
-		if err := s.Close(); err != nil {
-			log.Printf("PEX failed to close inbound stream: %v", err)
-		}
-	}()
+	defer s.Close()
 
 	// Read message
 	msgType, _, err := readPEXMessage(s)

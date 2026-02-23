@@ -94,7 +94,6 @@ type Node struct {
 // IsBanned checks if a peer is banned
 func (n *Node) IsBanned(pid peer.ID) bool {
 	if n.pex == nil {
-		log.Printf("IsBanned: pex is nil, allowing peer %s", pid.String()[:16])
 		return false
 	}
 	return n.pex.IsBanned(pid)
@@ -213,7 +212,7 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 
 	// Set up identity rotation callback
 	identity.SetRotationCallback(func(newKey crypto.PrivKey, newID peer.ID) {
-		log.Printf("Identity rotated to: %s", newID.String()[:16])
+		
 		node.mu.Lock()
 		node.pendingKey = newKey
 		node.pendingID = newID
@@ -252,13 +251,8 @@ func (n *Node) registerProtocols() {
 
 // handleBlockStream handles incoming block announcements
 func (n *Node) handleBlockStream(s network.Stream) {
-	defer func() {
-		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
-			log.Printf("failed to close block stream: %v", err)
-		}
-	}()
+	defer s.Close()
 	if err := s.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		log.Printf("failed to set block stream read deadline from %s: %v", s.Conn().RemotePeer(), err)
 		return
 	}
 
@@ -280,13 +274,8 @@ func (n *Node) handleBlockStream(s network.Stream) {
 // handleTxStream handles incoming transaction announcements (fluff phase).
 // All ProtocolTx ingress must pass through Dandelion fluff semantics.
 func (n *Node) handleTxStream(s network.Stream) {
-	defer func() {
-		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
-			log.Printf("failed to close tx stream: %v", err)
-		}
-	}()
+	defer s.Close()
 	if err := s.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		log.Printf("failed to set tx stream read deadline from %s: %v", s.Conn().RemotePeer(), err)
 		return
 	}
 
@@ -300,11 +289,7 @@ func (n *Node) handleTxStream(s network.Stream) {
 
 // handleSyncStream handles chain sync requests
 func (n *Node) handleSyncStream(s network.Stream) {
-	defer func() {
-		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
-			log.Printf("failed to close sync stream: %v", err)
-		}
-	}()
+	defer s.Close()
 	// Sync protocol will be implemented with the sync handler
 }
 
@@ -422,11 +407,7 @@ func (n *Node) sendToPeer(p peer.ID, proto protocol.ID, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
-			log.Printf("failed to close outbound %s stream to %s: %v", proto, p, err)
-		}
-	}()
+	defer s.Close()
 
 	return writeLengthPrefixed(s, data)
 }
@@ -487,6 +468,5 @@ func (n *Node) WritePeerFile(filename string) error {
 		return err
 	}
 
-	log.Printf("Wrote peer addresses to %s", filename)
 	return nil
 }

@@ -165,11 +165,7 @@ func (d *DandelionRouter) BroadcastTx(data []byte) {
 
 // HandleStemStream handles incoming stem phase transactions
 func (d *DandelionRouter) HandleStemStream(s network.Stream) {
-	defer func() {
-		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
-			log.Printf("failed to close dandelion stem stream: %v", err)
-		}
-	}()
+	defer s.Close()
 
 	// Read transaction data
 	data, err := readLengthPrefixedWithLimit(s, MaxDandelionStreamPayloadSize)
@@ -277,11 +273,7 @@ func (d *DandelionRouter) sendStem(p peer.ID, data []byte) error {
 		d.stemFailed(data)
 		return err
 	}
-	defer func() {
-		if err := s.Close(); err != nil && !isExpectedStreamCloseError(err) {
-			log.Printf("failed to close dandelion stem stream to %s: %v", p, err)
-		}
-	}()
+	defer s.Close()
 
 	if err := writeLengthPrefixed(s, data); err != nil {
 		d.stemFailed(data)

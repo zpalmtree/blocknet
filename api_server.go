@@ -233,9 +233,7 @@ func (s *APIServer) requireWallet(w http.ResponseWriter, _ *http.Request) bool {
 
 // Start launches the full authenticated API server.
 func (s *APIServer) Start(addr string) error {
-	if isInsecureAPIBindAddress(addr) {
-		log.Printf("Warning: API bind address %q is not loopback; place behind trusted network boundaries/TLS", addr)
-	}
+	
 
 	token, err := generateToken()
 	if err != nil {
@@ -270,7 +268,7 @@ func (s *APIServer) Start(addr string) error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	log.Printf("API listening on %s", addr)
+	
 
 	go func() {
 		if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
