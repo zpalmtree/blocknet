@@ -606,6 +606,15 @@ func (c *Chain) VerifyChain() []ChainViolation {
 		block := blocks[h]
 		prev := blocks[h-1]
 
+		// --- Hash linkage check ---
+		prevHash := prev.Hash()
+		if block.Header.PrevHash != prevHash {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("PrevHash mismatch: block points to %x, actual parent hash is %x", block.Header.PrevHash[:8], prevHash[:8]),
+			})
+		}
+
 		// --- Difficulty check ---
 		var expectedDiff uint64
 		// Consensus derives a block's difficulty from its parent context:
@@ -775,6 +784,15 @@ func (c *Chain) VerifyChainWithCheckpoints(checkpoints map[uint64][32]byte, chec
 		prev := get(h - 1)
 		if block == nil || prev == nil {
 			return []ChainViolation{{Height: h, Message: "block missing from storage"}}, usedCheckpointHeight
+		}
+
+		// --- Hash linkage check ---
+		prevHash := prev.Hash()
+		if block.Header.PrevHash != prevHash {
+			violations = append(violations, ChainViolation{
+				Height:  h,
+				Message: fmt.Sprintf("PrevHash mismatch: block points to %x, actual parent hash is %x", block.Header.PrevHash[:8], prevHash[:8]),
+			})
 		}
 
 		// --- Difficulty check ---

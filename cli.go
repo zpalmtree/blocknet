@@ -309,6 +309,30 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	}
 	cli.daemon = daemon
 
+	if daemon.repairFailed {
+		fmt.Printf("\n%s\n", cli.errorHead("Chain Repair Failed"))
+		fmt.Printf("  Found %d integrity violation(s) but could not auto-repair\n", daemon.repairViolations)
+		fmt.Println("  Your wallet is safe. Purge chain data and re-sync from peers?")
+		fmt.Print("\n  Purge and resync? [y/N]: ")
+		confirm, _ := cli.reader.ReadString('\n')
+		if strings.ToLower(strings.TrimSpace(confirm)) == "y" {
+			if err := daemon.Stop(); err != nil {
+				cancel()
+				return nil, fmt.Errorf("failed to stop daemon: %w", err)
+			}
+			if err := os.RemoveAll(cfg.DataDir); err != nil {
+				cancel()
+				return nil, fmt.Errorf("failed to purge chain data: %w", err)
+			}
+			cancel()
+			return nil, fmt.Errorf("chain data purged — restart to resync from genesis")
+		}
+	} else if daemon.repairViolations > 0 {
+		fmt.Printf("\n%s\n", cli.errorHead("Chain Repair"))
+		fmt.Printf("  Found %d integrity violation(s), truncated to height %d\n", daemon.repairViolations, daemon.repairTruncatedTo)
+		fmt.Println("  Will re-sync the remaining blocks from peers")
+	}
+
 	// Create API server if --api is set
 	if cfg.APIAddr != "" {
 		cli.api = NewAPIServer(daemon, w, cli.scanner, cfg.DataDir, password)

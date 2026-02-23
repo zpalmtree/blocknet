@@ -60,6 +60,11 @@ type Daemon struct {
 	checkpointsFile       string
 	lastCheckpointWritten uint64
 
+	// Self-heal info (set during NewDaemon if chain was truncated)
+	repairTruncatedTo uint64
+	repairViolations  int
+	repairFailed      bool
+
 	// State
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -279,6 +284,11 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		}
 	}
 
+	// Track self-heal info for caller to report.
+	var repairTruncatedTo uint64
+	var repairViolations int
+	var repairFailed bool
+
 	// Checkpoints: best-effort download/load for faster VerifyChain.
 	// This is an optimization (arithmetic-only) and should never prevent startup.
 	var checkpoints map[uint64][32]byte
@@ -320,12 +330,11 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		if len(violations) > 0 {
 			first := violations[0].Height
 			truncateTo := first - 1
+			repairViolations = len(violations)
 			if err := chain.TruncateToHeight(truncateTo); err != nil {
-				if closeErr := chain.Close(); closeErr != nil {
-					log.Printf("Warning: failed to close chain after truncate error: %v", closeErr)
-				}
-				cancel()
-				return nil, fmt.Errorf("failed to truncate chain: %w", err)
+				repairFailed = true
+			} else {
+				repairTruncatedTo = truncateTo
 			}
 		}
 	}
@@ -369,6 +378,9 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		stealthKeys:            stealthKeys,
 		saveCheckpoints:        cfg.SaveCheckpoints,
 		checkpointsFile:        checkpointsPath(cfg.DataDir),
+		repairTruncatedTo:      repairTruncatedTo,
+		repairViolations:       repairViolations,
+		repairFailed:           repairFailed,
 		ctx:                    ctx,
 		cancel:                 cancel,
 		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
