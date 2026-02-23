@@ -182,38 +182,40 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 
 	// Interactive mode: prompt for password and load wallet
 
+	// Backfill XDG backups for any .dat files we find but haven't backed up yet.
+	wallet.BackfillWalletBackups(".", filepath.Dir(cfg.WalletFile))
+
 	// Check if wallet exists
 	walletExists := fileExists(cfg.WalletFile)
 
 	// If wallet is missing and we have XDG backups, offer to restore one
 	if !walletExists && !cfg.RecoverMode {
-		if addrs := wallet.ListBackupAddresses(); len(addrs) > 0 {
+		if backups := wallet.ListBackups(); len(backups) > 0 {
 			fmt.Printf("\n%s\n", cli.sectionHead("Wallet Recovery"))
 			fmt.Println("  Your wallet file is missing, but backups were found.")
 			fmt.Println("  Select an address to restore, or press Enter to create a new wallet:")
-			for i, addr := range addrs {
-				short := addr
-				if len(addr) > 12 {
-					short = addr[:6] + "..." + addr[len(addr)-6:]
+			fmt.Println()
+			for i, b := range backups {
+				label := b.Address
+				if label == "unknown" {
+					label = "unknown (created " + b.Timestamp + ")"
+				} else if len(label) > 12 {
+					label = label[:6] + "..." + label[len(label)-6:]
 				}
-				fmt.Printf("  %d. %s\n", i+1, short)
+				fmt.Printf("  %d. %s\n", i+1, label)
 			}
 			fmt.Print("\n  > ")
 			line, _ := cli.reader.ReadString('\n')
 			line = strings.TrimSpace(line)
 			if line != "" {
 				idx := 0
-				if _, err := fmt.Sscanf(line, "%d", &idx); err == nil && idx >= 1 && idx <= len(addrs) {
-					chosen := addrs[idx-1]
+				if _, err := fmt.Sscanf(line, "%d", &idx); err == nil && idx >= 1 && idx <= len(backups) {
+					chosen := backups[idx-1].Address
 					if err := wallet.RestoreBackup(chosen, cfg.WalletFile); err != nil {
 						cancel()
 						return nil, fmt.Errorf("restore failed: %w", err)
 					}
-					short := chosen
-					if len(chosen) > 12 {
-						short = chosen[:6] + "..." + chosen[len(chosen)-6:]
-					}
-					fmt.Printf("  Restored wallet %s\n", short)
+					fmt.Println("  Wallet restored")
 					walletExists = true
 				}
 			}

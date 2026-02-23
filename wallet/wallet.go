@@ -79,8 +79,79 @@ func backupWalletFile(walletFile string, address string) {
 	os.WriteFile(filepath.Join(dir, "."+name), data, 0o600)
 }
 
-// ListBackupAddresses returns the addresses that have XDG backups available.
-func ListBackupAddresses() []string {
+// BackfillWalletBackups scans a directory for .dat wallet files that don't
+// already have XDG backups and copies them as "unknown" address backups,
+// using the file's modification time as the timestamp.
+func BackfillWalletBackups(dirs ...string) {
+	backupDir, err := walletBackupDir()
+	if err != nil {
+		return
+	}
+	// Collect existing backup filenames so we can skip files already backed up.
+	existing, err := os.ReadDir(backupDir)
+	if err != nil {
+		return
+	}
+	backedUpFiles := make(map[string]bool)
+	for _, e := range existing {
+		backedUpFiles[e.Name()] = true
+	}
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".dat") || strings.Contains(name, "BACKUP") {
+				continue
+			}
+			src := filepath.Join(dir, name)
+			data, err := os.ReadFile(src)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			stamp := info.ModTime().Format("2006-01-02-150405")
+			backupName := stamp + "-unknown" + backupSuffix
+
+			// Check if a backup already exists for this exact file (by timestamp match).
+			suffix := "-unknown" + backupSuffix
+			alreadyExists := false
+			for bName := range backedUpFiles {
+				bare := bName
+				if bare[0] == '.' {
+					bare = bare[1:]
+				}
+				if strings.HasSuffix(bare, suffix) && strings.HasPrefix(bare, stamp) {
+					alreadyExists = true
+					break
+				}
+			}
+			if alreadyExists {
+				continue
+			}
+
+			os.WriteFile(filepath.Join(backupDir, backupName), data, 0o600)
+			os.WriteFile(filepath.Join(backupDir, "."+backupName), data, 0o600)
+			backedUpFiles[backupName] = true
+			backedUpFiles["."+backupName] = true
+		}
+	}
+}
+
+// BackupEntry describes a wallet backup found in the XDG config directory.
+type BackupEntry struct {
+	Address   string // wallet address, or "unknown" for unidentified backups
+	Timestamp string // YYYY-MM-DD from the backup filename
+}
+
+// ListBackups returns the wallet backups found in the XDG config directory.
+func ListBackups() []BackupEntry {
 	dir, err := walletBackupDir()
 	if err != nil {
 		return nil
@@ -90,7 +161,7 @@ func ListBackupAddresses() []string {
 		return nil
 	}
 	seen := make(map[string]bool)
-	var addrs []string
+	var result []BackupEntry
 	for _, e := range entries {
 		name := e.Name()
 		if name[0] == '.' {
@@ -100,17 +171,17 @@ func ListBackupAddresses() []string {
 			continue
 		}
 		// Format: YYYY-MM-DD-HHmmSS-<address>.BACKUP.dat
-		// Find first '-' after the timestamp (pos 15) to extract address.
 		rest := strings.TrimSuffix(name, backupSuffix)
 		if idx := strings.LastIndex(rest, "-"); idx >= 15 {
 			addr := rest[idx+1:]
+			stamp := rest[:10] // YYYY-MM-DD
 			if addr != "" && !seen[addr] {
 				seen[addr] = true
-				addrs = append(addrs, addr)
+				result = append(result, BackupEntry{Address: addr, Timestamp: stamp})
 			}
 		}
 	}
-	return addrs
+	return result
 }
 
 // RestoreBackup copies the XDG backup for the given address to destFile.
