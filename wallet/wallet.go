@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +28,125 @@ func wipeBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+func walletBackupDir() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(configDir, "blocknet", "mainnet")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+const backupSuffix = ".BACKUP.dat"
+
+// backupWalletFile copies the wallet file into the XDG config directory as two
+// independent backups — one visible, one hidden. The filename includes a
+// timestamp for human reference; existing backups for the same address are
+// replaced so we never accumulate duplicates.
+func backupWalletFile(walletFile string, address string) {
+	dir, err := walletBackupDir()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(walletFile)
+	if err != nil {
+		return
+	}
+
+	suffix := "-" + address + backupSuffix
+	// Remove any previous backups for this address (visible and hidden).
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			n := e.Name()
+			bare := n
+			if bare[0] == '.' {
+				bare = bare[1:]
+			}
+			if strings.HasSuffix(bare, suffix) {
+				os.Remove(filepath.Join(dir, n))
+			}
+		}
+	}
+
+	stamp := time.Now().Format("2006-01-02-150405")
+	name := stamp + suffix
+	os.WriteFile(filepath.Join(dir, name), data, 0o600)
+	os.WriteFile(filepath.Join(dir, "."+name), data, 0o600)
+}
+
+// ListBackupAddresses returns the addresses that have XDG backups available.
+func ListBackupAddresses() []string {
+	dir, err := walletBackupDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var addrs []string
+	for _, e := range entries {
+		name := e.Name()
+		if name[0] == '.' {
+			name = name[1:]
+		}
+		if !strings.HasSuffix(name, backupSuffix) {
+			continue
+		}
+		// Format: YYYY-MM-DD-HHmmSS-<address>.BACKUP.dat
+		// Find first '-' after the timestamp (pos 15) to extract address.
+		rest := strings.TrimSuffix(name, backupSuffix)
+		if idx := strings.LastIndex(rest, "-"); idx >= 15 {
+			addr := rest[idx+1:]
+			if addr != "" && !seen[addr] {
+				seen[addr] = true
+				addrs = append(addrs, addr)
+			}
+		}
+	}
+	return addrs
+}
+
+// RestoreBackup copies the XDG backup for the given address to destFile.
+// Prefers the hidden copy (less likely to have been tampered with).
+func RestoreBackup(address, destFile string) error {
+	dir, err := walletBackupDir()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	suffix := "-" + address + backupSuffix
+	// Two passes: hidden first, then visible.
+	for _, hidden := range []bool{true, false} {
+		for _, e := range entries {
+			n := e.Name()
+			isHidden := n[0] == '.'
+			if isHidden != hidden {
+				continue
+			}
+			bare := n
+			if isHidden {
+				bare = bare[1:]
+			}
+			if strings.HasSuffix(bare, suffix) {
+				data, err := os.ReadFile(filepath.Join(dir, n))
+				if err != nil {
+					continue
+				}
+				return os.WriteFile(destFile, data, 0o600)
+			}
+		}
+	}
+	return fmt.Errorf("no backup found for %s", address)
 }
 
 func cloneBytes(b []byte) []byte {
@@ -361,6 +482,7 @@ func (w *Wallet) Save() error {
 		return fmt.Errorf("failed to write wallet file: %w", err)
 	}
 
+	backupWalletFile(w.filename, w.data.Keys.Address())
 	return nil
 }
 

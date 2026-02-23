@@ -185,6 +185,41 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	// Check if wallet exists
 	walletExists := fileExists(cfg.WalletFile)
 
+	// If wallet is missing and we have XDG backups, offer to restore one
+	if !walletExists && !cfg.RecoverMode {
+		if addrs := wallet.ListBackupAddresses(); len(addrs) > 0 {
+			fmt.Printf("\n%s\n", cli.sectionHead("Wallet Recovery"))
+			fmt.Println("  Your wallet file is missing, but backups were found.")
+			fmt.Println("  Select an address to restore, or press Enter to create a new wallet:")
+			for i, addr := range addrs {
+				short := addr
+				if len(addr) > 12 {
+					short = addr[:6] + "..." + addr[len(addr)-6:]
+				}
+				fmt.Printf("  %d. %s\n", i+1, short)
+			}
+			fmt.Print("\n  > ")
+			line, _ := cli.reader.ReadString('\n')
+			line = strings.TrimSpace(line)
+			if line != "" {
+				idx := 0
+				if _, err := fmt.Sscanf(line, "%d", &idx); err == nil && idx >= 1 && idx <= len(addrs) {
+					chosen := addrs[idx-1]
+					if err := wallet.RestoreBackup(chosen, cfg.WalletFile); err != nil {
+						cancel()
+						return nil, fmt.Errorf("restore failed: %w", err)
+					}
+					short := chosen
+					if len(chosen) > 12 {
+						short = chosen[:6] + "..." + chosen[len(chosen)-6:]
+					}
+					fmt.Printf("  Restored wallet %s\n", short)
+					walletExists = true
+				}
+			}
+		}
+	}
+
 	// Handle recovery mode
 	var recoverMnemonic string
 	if cfg.RecoverMode {
