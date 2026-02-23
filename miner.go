@@ -12,11 +12,11 @@ import (
 )
 
 // Emission curve: smooth exponential decay
-// Target supply: 10M coins over 4 years
-// Tail emission: 0.2 coins/block forever
+// Target supply: ~100M coins over 4 years
+// Tail emission: 2.0 coins/block forever
 const (
-	InitialReward = 72_325_093_035 // 72.33 coins in smallest units
-	TailEmission  = 200_000_000    // 0.2 coins
+	InitialReward = 72_325_093_035 // 723.25 coins in smallest units
+	TailEmission  = 200_000_000    // 2.0 coins
 	MonthsToTail  = 48
 	DecayRate     = 0.75 // per year
 )

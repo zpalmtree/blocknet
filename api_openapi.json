@@ -1699,7 +1699,7 @@
             "description": "Transaction summaries (first tx is coinbase for height > 0)"
           },
           "confirmations": { "type": "integer", "description": "Confirmations since this block (chain_height - block_height + 1)" },
-          "reward": { "type": "integer", "description": "Block reward in atomic units (smooth exponential decay to 0.2 BNT tail)" }
+          "reward": { "type": "integer", "description": "Block reward in atomic units (smooth exponential decay to 2.0 BNT tail)" }
         },
         "example": {
           "height": 14207,

@@ -111,8 +111,8 @@ func (e *Explorer) getSupplyInfo() (emitted, remaining uint64, pctEmitted float6
 	e.supplyHeight = height
 	emitted = e.supplyEmitted
 
-	// Target supply is ~10M coins (before tail emission)
-	targetSupply := uint64(10_000_000 * 100_000_000) // in smallest units
+	// Target supply is ~100M coins (before tail emission)
+	targetSupply := uint64(100_000_000 * 100_000_000) // in smallest units
 	if emitted >= targetSupply {
 		remaining = 0
 		pctEmitted = 100.0

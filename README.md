@@ -8,7 +8,7 @@ Private digital currency. Stealth addresses, ring signatures, confidential trans
 |---|---|
 | algorithm | Argon2id (2GB) |
 | block time | 5 min |
-| supply | ~10M + 0.2/block tail |
+| supply | ~100M + 2.0/block tail |
 | ring size | 16 (fixed) |
 | addresses | stealth (dual-key) |
 | amounts | Pedersen + Bulletproofs |
