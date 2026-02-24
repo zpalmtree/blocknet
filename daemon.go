@@ -1157,18 +1157,39 @@ func (d *Daemon) MinerStats() MinerStats {
 }
 
 // SubmitTransaction adds a transaction to mempool and broadcasts to peers.
-// SubmitBlock validates a mined block, adds it to the chain, and broadcasts to peers.
+// SubmitBlock relays a mined block immediately, then validates/processes it locally.
 func (d *Daemon) SubmitBlock(block *Block) error {
+	if block == nil {
+		return fmt.Errorf("invalid block: nil block")
+	}
+
+	// Serialize once so we can relay immediately before expensive PoW validation.
+	blockData, err := json.Marshal(block)
+	if err != nil {
+		return fmt.Errorf("failed to marshal block: %w", err)
+	}
+
+	// Keep stale-submit semantics for API callers before relaying.
+	d.mu.RLock()
+	if err := d.validateSubmitBlockStaleLocked(block); err != nil {
+		d.mu.RUnlock()
+		return err
+	}
+	d.mu.RUnlock()
+
+	// Relay to peers immediately to minimize stale risk from local PoW re-check latency.
+	d.syncMgr.BroadcastBlock(blockData)
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Validate block (PoW, difficulty, merkle root, transactions, etc.)
-	if err := ValidateBlock(block, d.chain); err != nil {
-		return fmt.Errorf("invalid block: %w", err)
+	// Tip may have advanced between early relay and local processing.
+	if err := d.validateSubmitBlockStaleLocked(block); err != nil {
+		return err
 	}
 
 	prevBest := d.chain.BestHash()
-	accepted, isMainChain, err := d.chain.ProcessBlock(block)
+	accepted, isMainChain, err := d.chain.ProcessLocalSubmitBlock(block)
 	if err != nil {
 		return fmt.Errorf("failed to process block: %w", err)
 	}
@@ -1181,17 +1202,22 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 		d.miner.NotifyNewBlock()
 	}
 
-	// Broadcast to peers
-	blockData, err := json.Marshal(block)
-	if err != nil {
-		return fmt.Errorf("failed to marshal block: %w", err)
-	}
-	d.syncMgr.BroadcastBlock(blockData)
-
 	// Notify subscribers
 	d.notifyBlock(block)
 	d.notifyMinedBlock(block)
 
+	return nil
+}
+
+func (d *Daemon) validateSubmitBlockStaleLocked(block *Block) error {
+	tipHeight := d.chain.Height()
+	expectedHeight := tipHeight + 1
+	if block.Header.Height <= tipHeight {
+		return fmt.Errorf("%w: expected height %d, got %d", ErrStaleBlock, expectedHeight, block.Header.Height)
+	}
+	if block.Header.Height == expectedHeight && block.Header.PrevHash != d.chain.BestHash() {
+		return fmt.Errorf("%w: does not build on current tip", ErrStaleBlock)
+	}
 	return nil
 }
 

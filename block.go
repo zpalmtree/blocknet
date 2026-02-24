@@ -1361,7 +1361,7 @@ func (c *Chain) addGenesisBlock(block *Block) error {
 	if _, _, _, found := c.storage.GetTip(); found {
 		return fmt.Errorf("genesis already exists; refusing unvalidated write path")
 	}
-	if err := c.validateBlockForProcessLocked(block); err != nil {
+	if err := c.validateBlockForProcessLocked(block, false); err != nil {
 		return fmt.Errorf("invalid genesis block: %w", err)
 	}
 
@@ -1456,6 +1456,17 @@ func (c *Chain) addBlockInternal(block *Block) error {
 // ProcessBlock validates and adds a block, handling fork choice
 // Returns true if block was accepted (even if not on main chain)
 func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err error) {
+	return c.processBlockWithOptions(block, false)
+}
+
+// ProcessLocalSubmitBlock validates and adds a locally-submitted tip-extension block.
+// It skips redundant PoW revalidation for direct tip extensions to reduce submit->accept
+// latency for trusted local mining paths.
+func (c *Chain) ProcessLocalSubmitBlock(block *Block) (accepted bool, isMainChain bool, err error) {
+	return c.processBlockWithOptions(block, true)
+}
+
+func (c *Chain) processBlockWithOptions(block *Block, allowLocalSubmitPoWSkip bool) (accepted bool, isMainChain bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1469,7 +1480,7 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 		return false, false, nil
 	}
 
-	if err := c.validateBlockForProcessLocked(block); err != nil {
+	if err := c.validateBlockForProcessLocked(block, allowLocalSubmitPoWSkip); err != nil {
 		return false, false, err
 	}
 
@@ -1511,7 +1522,26 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 	return true, false, nil
 }
 
-func (c *Chain) validateBlockForProcessLocked(block *Block) error {
+func (c *Chain) shouldSkipPoWForProcessLocked(block *Block, allowLocalSubmitPoWSkip bool) bool {
+	if block == nil {
+		return false
+	}
+
+	extendsTip := block.Header.PrevHash == c.bestHash
+	if c.shouldSkipPoWLocked(block.Header.Height, extendsTip) {
+		return true
+	}
+
+	// Local submit path: avoid re-running expensive PoW verification when the
+	// solved block extends the current tip exactly.
+	if allowLocalSubmitPoWSkip && extendsTip && block.Header.Height == c.height+1 {
+		return true
+	}
+
+	return false
+}
+
+func (c *Chain) validateBlockForProcessLocked(block *Block, allowLocalSubmitPoWSkip bool) error {
 	isSpent := c.isKeyImageSpentLocked
 	if block != nil && block.Header.Height > 0 {
 		branchAwareSpent, err := c.branchAwareSpentCheckerLocked(block.Header.PrevHash)
@@ -1534,11 +1564,7 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		}
 	}
 
-	extendsTip := block != nil && block.Header.PrevHash == c.bestHash
-	skipPoW := false
-	if block != nil {
-		skipPoW = c.shouldSkipPoWLocked(block.Header.Height, extendsTip)
-	}
+	skipPoW := c.shouldSkipPoWForProcessLocked(block, allowLocalSubmitPoWSkip)
 
 	return validateBlockWithContext(
 		block,
