@@ -18,6 +18,7 @@ go.work
 account.json
 wallet.dat
 *.dat
+!/checkpoints.dat
 *.key
 identity.key
 
