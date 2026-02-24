@@ -879,8 +879,8 @@ func (c *CLI) importWalletTargetPath() (base string, walletPath string, err erro
 	if base == "" || base == "." || base == "/" {
 		return "", "", fmt.Errorf("invalid wallet name")
 	}
-	if !strings.HasSuffix(base, ".wallet.md") {
-		base += ".wallet.md"
+	if !strings.HasSuffix(base, ".wallet.dat") {
+		base += ".wallet.dat"
 	}
 
 	walletPath = filepath.Join(filepath.Dir(c.walletFile), base)
