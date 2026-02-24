@@ -729,21 +729,34 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		walletHeight = wl.SyncedHeight()
+	}
+
+	// Conservative reorg recovery: when wallet and chain heights match exactly,
+	// rewind one block and rescan tip. This clears stale same-height branch data
+	// even for wallets that predate tip-hash sync metadata.
+	if walletHeight == chainHeight && chainHeight > 0 {
+		wl.RewindToHeight(chainHeight - 1)
+		walletHeight = wl.SyncedHeight()
 	}
 
 	// Catch up on blocks that arrived before the wallet was loaded
 	if walletHeight < chainHeight {
+		scannedTo := walletHeight
 		for h := walletHeight + 1; h <= chainHeight; h++ {
 			block := s.daemon.Chain().GetBlockByHeight(h)
 			if block == nil {
 				break
 			}
 			scanner.ScanBlock(blockToScanData(block))
+			scannedTo = h
 		}
-		wl.SetSyncedHeight(chainHeight)
-		if err := wl.Save(); err != nil {
-			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
-			return
+		if scannedTo > walletHeight {
+			wl.SetSyncedHeight(scannedTo)
+			if err := wl.Save(); err != nil {
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+				return
+			}
 		}
 	}
 
@@ -848,17 +861,21 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 	// Scan the entire chain to find outputs belonging to this seed
 	chainHeight := s.daemon.Chain().Height()
 	if chainHeight > 0 {
+		scannedTo := uint64(0)
 		for h := uint64(1); h <= chainHeight; h++ {
 			block := s.daemon.Chain().GetBlockByHeight(h)
 			if block == nil {
 				break
 			}
 			scanner.ScanBlock(blockToScanData(block))
+			scannedTo = h
 		}
-		wl.SetSyncedHeight(chainHeight)
-		if err := wl.Save(); err != nil {
-			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
-			return
+		if scannedTo > 0 {
+			wl.SetSyncedHeight(scannedTo)
+			if err := wl.Save(); err != nil {
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+				return
+			}
 		}
 	}
 
