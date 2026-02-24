@@ -368,20 +368,7 @@ func (c *CLI) Run() error {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
-	// Check if wallet is ahead of chain (chain was reset/reorged)
-	if c.wallet != nil {
-		chainHeight := c.daemon.Chain().Height()
-		walletHeight := c.wallet.SyncedHeight()
-		if walletHeight > chainHeight {
-			removed := c.wallet.RewindToHeight(chainHeight)
-			if removed > 0 {
-				fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, chainHeight)
-				if err := c.wallet.Save(); err != nil {
-					fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
-				}
-			}
-		}
-	}
+	c.recoverWalletAfterChainReset()
 
 	// Start API server if configured
 	if c.api != nil {
@@ -473,6 +460,34 @@ func (c *CLI) Run() error {
 				return c.shutdown()
 			}
 			fmt.Printf("\n%s\n  %v\n", c.errorHead("Error"), err)
+		}
+	}
+}
+
+func (c *CLI) recoverWalletAfterChainReset() {
+	// Check if wallet is ahead of chain (chain was reset/reorged)
+	if c.wallet == nil || c.daemon == nil {
+		return
+	}
+	chainHeight := c.daemon.Chain().Height()
+	walletHeight := c.wallet.SyncedHeight()
+	if walletHeight > chainHeight {
+		removed := c.wallet.RewindToHeight(chainHeight)
+		if removed > 0 {
+			fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, chainHeight)
+			if err := c.wallet.Save(); err != nil {
+				fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
+			}
+		}
+	} else if chainHeight > 0 && walletHeight == chainHeight {
+		// Conservative reorg recovery: if wallet and chain are at the same height,
+		// rewind one block to clear potentially stale same-height fork state.
+		removed := c.wallet.RewindToHeight(chainHeight - 1)
+		if removed > 0 {
+			fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, chainHeight-1)
+			if err := c.wallet.Save(); err != nil {
+				fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
+			}
 		}
 	}
 }
