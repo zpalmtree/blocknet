@@ -1163,9 +1163,8 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Validate block (PoW, difficulty, merkle root, transactions, etc.)
-	if err := ValidateBlock(block, d.chain); err != nil {
-		return fmt.Errorf("invalid block: %w", err)
+	if err := d.validateSubmitBlockStaleLocked(block); err != nil {
+		return err
 	}
 
 	prevBest := d.chain.BestHash()
@@ -1194,6 +1193,21 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 	d.notifyBlock(block)
 	d.notifyMinedBlock(block)
 
+	return nil
+}
+
+func (d *Daemon) validateSubmitBlockStaleLocked(block *Block) error {
+	if block == nil {
+		return fmt.Errorf("invalid block: nil block")
+	}
+	tipHeight := d.chain.Height()
+	expectedHeight := tipHeight + 1
+	if block.Header.Height <= tipHeight {
+		return fmt.Errorf("%w: expected height %d, got %d", ErrStaleBlock, expectedHeight, block.Header.Height)
+	}
+	if block.Header.Height == expectedHeight && block.Header.PrevHash != d.chain.BestHash() {
+		return fmt.Errorf("%w: does not build on current tip", ErrStaleBlock)
+	}
 	return nil
 }
 
