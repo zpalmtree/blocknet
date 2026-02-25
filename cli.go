@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	_ "embed"
 	"fmt"
 	"io"
@@ -419,8 +420,10 @@ func (c *CLI) Run() error {
 
 	if !c.noVersionCheck {
 		go func() {
-			if latest, err := fetchLatestVersion(); err == nil && isNewerVersion(latest, Version) {
-				c.printUpdateNotice(latest)
+			if latest, err := fetchLatestVersion(); err == nil {
+				if urgency := versionUrgency(latest, Version); urgency != updateNone {
+					c.printUpdateNotice(latest, urgency)
+				}
 			}
 		}()
 		go c.periodicVersionCheck()
@@ -538,7 +541,13 @@ func (c *CLI) printWelcome() {
 
 func fetchLatestVersion() (string, error) {
 	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Get("https://raw.githubusercontent.com/blocknetprivacy/blocknet/refs/heads/master/main.go")
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/blocknetprivacy/blocknet/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "blocknet-version-check")
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -550,39 +559,73 @@ func fetchLatestVersion() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Extract: const Version = "x.y.z"
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "const Version") {
-			parts := strings.SplitN(line, `"`, 3)
-			if len(parts) == 3 {
-				return parts[1], nil
-			}
-		}
+	var payload struct {
+		TagName string `json:"tag_name"`
 	}
-	return "", fmt.Errorf("version not found in remote main.go")
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	latest := strings.TrimSpace(strings.TrimPrefix(payload.TagName, "v"))
+	if latest == "" {
+		return "", fmt.Errorf("tag_name not found in latest release payload")
+	}
+	return latest, nil
 }
 
-func parseVersionParts(v string) [3]int {
+func parseVersionParts(v string) ([3]int, bool) {
 	var parts [3]int
-	for i, s := range strings.SplitN(v, ".", 3) {
-		parts[i], _ = strconv.Atoi(s)
+	core := strings.TrimSpace(strings.TrimPrefix(v, "v"))
+	if i := strings.IndexByte(core, '-'); i >= 0 {
+		core = core[:i]
 	}
-	return parts
+	if i := strings.IndexByte(core, '+'); i >= 0 {
+		core = core[:i]
+	}
+	segs := strings.SplitN(core, ".", 3)
+	if len(segs) < 1 {
+		return parts, false
+	}
+	for i, s := range segs {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			return parts, false
+		}
+		parts[i] = n
+	}
+	return parts, true
 }
 
-func isNewerVersion(latest, current string) bool {
-	l := parseVersionParts(latest)
-	c := parseVersionParts(current)
+type updateUrgency int
+
+const (
+	updateNone updateUrgency = iota
+	updatePatch
+	updateMinor
+	updateMajor
+)
+
+func versionUrgency(latest, current string) updateUrgency {
+	l, okLatest := parseVersionParts(latest)
+	c, okCurrent := parseVersionParts(current)
+	if !okLatest || !okCurrent {
+		return updateNone
+	}
 	for i := range l {
 		if l[i] > c[i] {
-			return true
+			switch i {
+			case 0:
+				return updateMajor
+			case 1:
+				return updateMinor
+			default:
+				return updatePatch
+			}
 		}
 		if l[i] < c[i] {
-			return false
+			return updateNone
 		}
 	}
-	return false
+	return updateNone
 }
 
 func (c *CLI) periodicVersionCheck() {
@@ -593,23 +636,47 @@ func (c *CLI) periodicVersionCheck() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			if latest, err := fetchLatestVersion(); err == nil && isNewerVersion(latest, Version) {
-				c.printUpdateNotice(latest)
+			if latest, err := fetchLatestVersion(); err == nil {
+				if urgency := versionUrgency(latest, Version); urgency != updateNone {
+					c.printUpdateNotice(latest, urgency)
+				}
 			}
 		}
 	}
 }
 
-func (c *CLI) printUpdateNotice(latest string) {
-	amber := "\033[38;2;255;170;0m"
+func (c *CLI) printUpdateNotice(latest string, urgency updateUrgency) {
+	accent := "\033[38;2;0;170;255m" // #0AF
 	rst := "\033[0m"
 	if c.noColor {
-		amber = ""
+		accent = ""
 		rst = ""
 	}
-	fmt.Printf("\n%s# Update available%s\n", amber, rst)
-	fmt.Printf("  %sv%s -> v%s%s\n", amber, Version, latest, rst)
-	fmt.Printf("  %shttps://github.com/blocknetprivacy/blocknet/releases/latest%s\n", amber, rst)
+
+	title := "Update available"
+	message := "A newer release is available."
+	switch urgency {
+	case updatePatch:
+		title = "Patch update available"
+		message = "You're fine to keep running, but this includes fixes and polish worth pulling in."
+		accent = "\033[38;2;0;170;255m" // #0AF
+	case updateMinor:
+		title = "Minor update available"
+		message = "New features are available, and compatibility may drift soon. Plan to upgrade soon."
+		accent = "\033[38;2;255;170;0m" // #FA0
+	case updateMajor:
+		title = "Major update available"
+		message = "This is a significant release. Upgrading is strongly recommended."
+		accent = "\033[38;2;255;0;170m" // #F0A
+	}
+	if c.noColor {
+		accent = ""
+	}
+
+	fmt.Printf("\n%s# %s%s\n", accent, title, rst)
+	fmt.Printf("  %sv%s -> v%s%s\n", accent, Version, latest, rst)
+	fmt.Printf("  %s%s%s\n", accent, message, rst)
+	fmt.Printf("  %shttps://github.com/blocknetprivacy/blocknet/releases/latest%s\n", accent, rst)
 }
 
 func (c *CLI) executeCommand(line string) error {
