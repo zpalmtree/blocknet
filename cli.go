@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -685,6 +686,13 @@ func (c *CLI) executeCommand(line string) error {
 		return nil
 	}
 
+	if sendArgs, matched, err := parseSendArgsFromPaymentLink(line); matched {
+		if err != nil {
+			return err
+		}
+		parts = append([]string{"send"}, sendArgs...)
+	}
+
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
 
@@ -751,6 +759,71 @@ func (c *CLI) executeCommand(line string) error {
 	}
 
 	return nil
+}
+
+func parseSendArgsFromPaymentLink(line string) ([]string, bool, error) {
+	raw := strings.TrimSpace(line)
+	if raw == "" {
+		return nil, false, nil
+	}
+
+	lower := strings.ToLower(raw)
+	isBlocknetURI := strings.HasPrefix(lower, "blocknet://") || strings.HasPrefix(lower, "blocknet:")
+	isBntpayLink := strings.HasPrefix(lower, "bntpay.com/") ||
+		strings.HasPrefix(lower, "www.bntpay.com/") ||
+		strings.HasPrefix(lower, "https://bntpay.com/") ||
+		strings.HasPrefix(lower, "http://bntpay.com/") ||
+		strings.HasPrefix(lower, "https://www.bntpay.com/") ||
+		strings.HasPrefix(lower, "http://www.bntpay.com/")
+	if !isBlocknetURI && !isBntpayLink {
+		return nil, false, nil
+	}
+
+	link := raw
+	if isBntpayLink && !strings.Contains(lower, "://") {
+		link = "https://" + raw
+	}
+
+	u, err := url.Parse(link)
+	if err != nil {
+		return nil, true, fmt.Errorf("invalid payment link: %w", err)
+	}
+
+	var address string
+	switch strings.ToLower(u.Scheme) {
+	case "blocknet":
+		address = strings.TrimSpace(u.Host)
+		if address == "" {
+			address = strings.TrimSpace(u.Opaque)
+		}
+		if address == "" {
+			address = strings.Trim(strings.TrimSpace(u.Path), "/")
+		}
+	case "http", "https":
+		host := strings.ToLower(u.Hostname())
+		if host != "bntpay.com" && host != "www.bntpay.com" {
+			return nil, true, fmt.Errorf("invalid bntpay host: %s", u.Hostname())
+		}
+		address = strings.Trim(strings.TrimSpace(u.Path), "/")
+	default:
+		return nil, true, fmt.Errorf("unsupported payment link scheme: %s", u.Scheme)
+	}
+
+	if address == "" {
+		return nil, true, fmt.Errorf("payment link missing address")
+	}
+
+	query := u.Query()
+	amount := strings.TrimSpace(query.Get("amount"))
+	if amount == "" {
+		return nil, true, fmt.Errorf("payment link missing amount")
+	}
+
+	args := []string{address, amount}
+	if memo := query.Get("memo"); memo != "" {
+		args = append(args, memo)
+	}
+	return args, true, nil
 }
 
 func (c *CLI) shutdown() error {
