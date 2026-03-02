@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -25,9 +26,9 @@ const (
 
 // Explorer serves the block explorer web interface
 type Explorer struct {
-	daemon   *Daemon
-	mux      *http.ServeMux
-	basePath string // URL prefix (e.g. "/testnet" for testnet, "" for mainnet)
+	daemon      *Daemon
+	mux         *http.ServeMux
+	testnetAddr string // address of the local testnet explorer (e.g. "127.0.0.1:18080")
 
 	statsMu         sync.RWMutex
 	statsSnapshot   explorerStatsSnapshot
@@ -65,11 +66,11 @@ type explorerStatsSnapshot struct {
 
 // NewExplorer creates a new explorer server
 func NewExplorer(daemon *Daemon) *Explorer {
-	bp := ""
-	if params.IsTestnet {
-		bp = "/testnet"
+	e := &Explorer{
+		daemon:      daemon,
+		mux:         http.NewServeMux(),
+		testnetAddr: "127.0.0.1:18080",
 	}
-	e := &Explorer{daemon: daemon, mux: http.NewServeMux(), basePath: bp}
 	e.mux.HandleFunc("/", e.handleIndex)
 	e.mux.HandleFunc("/block/", e.handleBlock)
 	e.mux.HandleFunc("/tx/", e.handleTx)
@@ -79,9 +80,37 @@ func NewExplorer(daemon *Daemon) *Explorer {
 	return e
 }
 
-// ServeHTTP implements http.Handler
+// ServeHTTP implements http.Handler.
+// On mainnet, if the client has a net=testnet cookie, the request is
+// reverse-proxied to the co-located testnet explorer daemon.
 func (e *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !params.IsTestnet {
+		if c, err := r.Cookie("net"); err == nil && c.Value == "testnet" {
+			e.proxyToTestnet(w, r)
+			return
+		}
+	}
 	e.mux.ServeHTTP(w, r)
+}
+
+func (e *Explorer) proxyToTestnet(w http.ResponseWriter, r *http.Request) {
+	u := "http://" + e.testnetAddr + r.URL.Path
+	if r.URL.RawQuery != "" {
+		u += "?" + r.URL.RawQuery
+	}
+	resp, err := http.Get(u)
+	if err != nil {
+		http.Error(w, "testnet explorer unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 func (e *Explorer) httpServer(addr string) *http.Server {
@@ -380,7 +409,6 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"BasePath":  e.basePath,
 		"IsTestnet": params.IsTestnet,
 		"Height":    height,
 		"Difficulty": chain.NextDifficulty(),
@@ -406,7 +434,7 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	// Extract block ID from path: /block/{id}
 	path := strings.TrimPrefix(r.URL.Path, "/block/")
 	if path == "" {
-		http.Redirect(w, r, e.basePath+"/", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 
@@ -460,7 +488,6 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"BasePath":   e.basePath,
 		"IsTestnet":  params.IsTestnet,
 		"Height":     block.Header.Height,
 		"Hash":       fmt.Sprintf("%x", hash[:]),
@@ -486,7 +513,7 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/tx/")
 	if path == "" || len(path) < 64 {
-		http.Redirect(w, r, e.basePath+"/", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 
@@ -540,7 +567,6 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"BasePath":    e.basePath,
 		"IsTestnet":   params.IsTestnet,
 		"Hash":        fmt.Sprintf("%x", txID),
 		"IsCoinbase":  isCoinbase,
@@ -574,7 +600,6 @@ func (e *Explorer) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"BasePath":     e.basePath,
 		"IsTestnet":    params.IsTestnet,
 		"Height":       snapshot.Height,
 		"Difficulty":   snapshot.Difficulty,
@@ -599,16 +624,15 @@ func (e *Explorer) findTx(hashStr string) (*Transaction, uint64, bool) {
 
 func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	bp := e.basePath
 	if q == "" {
-		http.Redirect(w, r, bp+"/", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 
 	// Try as block height
 	if height, err := strconv.ParseUint(q, 10, 64); err == nil {
 		if height <= e.daemon.chain.Height() {
-			http.Redirect(w, r, bp+"/block/"+q, http.StatusFound)
+			http.Redirect(w, r, "/block/"+q, http.StatusFound)
 			return
 		}
 	}
@@ -620,14 +644,14 @@ func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if decoded, err := hex.DecodeString(q); err == nil && len(decoded) == 32 {
 			copy(hash[:], decoded)
 			if e.daemon.chain.GetBlock(hash) != nil {
-				http.Redirect(w, r, bp+"/block/"+q, http.StatusFound)
+				http.Redirect(w, r, "/block/"+q, http.StatusFound)
 				return
 			}
 		}
 
 		// Then check if it's a tx hash in blockchain
 		if _, _, found := e.findTx(q); found {
-			http.Redirect(w, r, bp+"/tx/"+q, http.StatusFound)
+			http.Redirect(w, r, "/tx/"+q, http.StatusFound)
 			return
 		}
 
@@ -636,13 +660,13 @@ func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {
 			var txID [32]byte
 			copy(txID[:], decoded)
 			if e.daemon.mempool.HasTransaction(txID) {
-				http.Redirect(w, r, bp+"/tx/"+q, http.StatusFound)
+				http.Redirect(w, r, "/tx/"+q, http.StatusFound)
 				return
 			}
 		}
 
 		// Default to block (will show not found if invalid)
-		http.Redirect(w, r, bp+"/block/"+q, http.StatusFound)
+		http.Redirect(w, r, "/block/"+q, http.StatusFound)
 		return
 	}
 
@@ -738,13 +762,14 @@ var active=false,hex='0123456789abcdef';
 function px(c){c=c.replace('#','');if(c.length===3)c=c[0]+c[0]+c[1]+c[1]+c[2]+c[2];return[parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)];}
 function hx(r,g,b){return'#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);}
 function lp(a,b,t){return Math.round(a+(b-a)*t);}
-var tn=getComputedStyle(document.documentElement).getPropertyValue('--ac').trim()==='#f0a';
+function tw(from,to,t){return hx(lp(from[0],to[0],t),lp(from[1],to[1],t),lp(from[2],to[2],t));}
+var tn=document.cookie.indexOf('net=testnet')!==-1;
 var acO=px(tn?'#f0a':'#af0'),acT=px(tn?'#af0':'#f0a');
 var ahO=px(tn?'#f5c':'#cf3'),ahT=px(tn?'#cf3':'#f5c');
-function tw(from,to,t){return hx(lp(from[0],to[0],t),lp(from[1],to[1],t),lp(from[2],to[2],t));}
 egg.addEventListener('click',function(ev){
 ev.preventDefault();ev.stopPropagation();
 if(active)return;active=true;
+document.cookie='net='+(tn?'mainnet':'testnet')+';path=/;max-age=31536000';
 var els=document.querySelectorAll('h1,h2,.topnav a,.stat-k,.stat-v,.prop-k,.prop-v,td,th,footer a,button,.nav a');
 var saved=[];
 for(var i=0;i<els.length;i++){
@@ -752,30 +777,19 @@ saved.push(els[i].textContent);
 var s='';for(var j=0;j<els[i].textContent.length;j++){var c=els[i].textContent[j];s+=/\s/.test(c)?c:hex[Math.random()*16|0];}
 els[i].textContent=s;
 }
-var t0=Date.now(),phase=1,dur1=800,dur2=960;
+var t0=Date.now(),dur=1800;
 var iv=setInterval(function(){
-var now=Date.now();
-if(phase===1){
-var t=Math.min(1,(now-t0)/dur1);
+var t=Math.min(1,(Date.now()-t0)/dur);
 document.documentElement.style.setProperty('--ac',tw(acO,acT,t));
 document.documentElement.style.setProperty('--ac-h',tw(ahO,ahT,t));
-for(var i=0;i<els.length;i++){var s='';
-for(var j=0;j<els[i].textContent.length;j++){var c=els[i].textContent[j];s+=/\s/.test(c)?c:hex[Math.random()*16|0];}
-els[i].textContent=s;}
-if(t>=1){phase=2;t0=now;}
-}else{
-var t=Math.min(1,(now-t0)/dur2);
-document.documentElement.style.setProperty('--ac',tw(acT,acO,t));
-document.documentElement.style.setProperty('--ac-h',tw(ahT,ahO,t));
+if(t>0.45){var dt=(t-0.45)/0.55;
 for(var i=0;i<els.length;i++){var orig=saved[i],cur='';
-for(var j=0;j<orig.length;j++){if(Math.random()<t)cur+=orig[j];else cur+=/\s/.test(orig[j])?orig[j]:hex[Math.random()*16|0];}
+for(var j=0;j<orig.length;j++){if(Math.random()<dt)cur+=orig[j];else cur+=/\s/.test(orig[j])?orig[j]:hex[Math.random()*16|0];}
 els[i].textContent=cur;}
-if(t>=1){clearInterval(iv);
-for(var i=0;i<els.length;i++){els[i].textContent=saved[i];}
-document.documentElement.style.setProperty('--ac',tn?'#f0a':'#af0');
-document.documentElement.style.setProperty('--ac-h',tn?'#f5c':'#cf3');
-active=false;}
-}
+}else{for(var i=0;i<els.length;i++){var s='';
+for(var j=0;j<els[i].textContent.length;j++){var c=els[i].textContent[j];s+=/\s/.test(c)?c:hex[Math.random()*16|0];}
+els[i].textContent=s;}}
+if(t>=1){clearInterval(iv);location.reload();}
 },60);
 });
 })();
@@ -803,9 +817,9 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1><div style="display:flex;gap:12px">{{if .IsTestnet}}<a href="/" style="font-size:13px">mainnet</a>{{else}}<a href="/testnet/" style="font-size:13px">testnet</a>{{end}}<a href="{{.BasePath}}/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1><div style="display:flex;gap:12px"><a href="/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
 
-<form class="search" action="{{.BasePath}}/search" method="get">
+<form class="search" action="/search" method="get">
 <input type="text" name="q" placeholder="Search by block height or hash...">
 <button type="submit">Search</button>
 </form>
@@ -831,7 +845,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <tr><th>Hash</th><th>Fee</th><th>Fee/byte</th><th>Size</th><th>Age</th></tr>
 {{range .MempoolTxs}}
 <tr>
-<td class="hash"><a href="{{$.BasePath}}/tx/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
+<td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
 <td>{{printf "%.8f" .Fee}}</td>
 <td>{{.FeeRate}}</td>
 <td>{{.Size}} B</td>
@@ -848,15 +862,15 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <tr><th>Height</th><th>Hash</th><th>Age</th><th>Txs</th></tr>
 {{range .Blocks}}
 <tr>
-<td><a href="{{$.BasePath}}/block/{{.Height}}">{{.Height}}</a></td>
-<td class="hash"><a href="{{$.BasePath}}/block/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
+<td><a href="/block/{{.Height}}">{{.Height}}</a></td>
+<td class="hash"><a href="/block/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
 <td>{{.Ago}}</td>
 <td>{{.TxCount}}</td>
 </tr>
 {{end}}
 </table>
 
-<footer><a href="https://blocknetcrypto.com">← blocknetcrypto.com</a>{{if .IsTestnet}} <span class="d">·</span> <a href="/">mainnet explorer</a>{{end}}</footer>
+<footer><a href="https://blocknetcrypto.com">← blocknetcrypto.com</a>{{if .IsTestnet}} <span class="d">·</span> <span class="d">testnet</span>{{end}}</footer>
 ` + explorerEggScript + `
 </body>
 </html>`
@@ -883,18 +897,18 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
-<div class="topnav">{{if .IsTestnet}}<a href="/">mainnet</a>  {{else}}<a href="/testnet/">testnet</a>  {{end}}<a href="{{.BasePath}}/">blocks</a>  <a href="{{.BasePath}}/stats">stats</a></div>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<div class="topnav"><a href="/">blocks</a>  <a href="/stats">stats</a></div>
 
 <div class="nav">
-{{if .HasPrev}}<a href="{{.BasePath}}/block/{{.PrevHeight}}">← Block {{.PrevHeight}}</a>{{end}}
-{{if .HasNext}}<a href="{{.BasePath}}/block/{{.NextHeight}}">Block {{.NextHeight}} →</a>{{end}}
+{{if .HasPrev}}<a href="/block/{{.PrevHeight}}">← Block {{.PrevHeight}}</a>{{end}}
+{{if .HasNext}}<a href="/block/{{.NextHeight}}">Block {{.NextHeight}} →</a>{{end}}
 </div>
 
 <h2><span class="g">#</span> block {{.Height}}</h2>
 <div class="box">
 <div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{if .IsGenesis}}<span title="{{.GenesisMsg}}" style="cursor:help;border-bottom:1px dashed var(--ac)">{{.Hash}}</span>{{else}}{{.Hash}}{{end}}</div></div>
-<div class="prop"><div class="prop-k">Previous</div><div class="prop-v mono"><a href="{{.BasePath}}/block/{{.PrevHash}}">{{.PrevHash}}</a></div></div>
+<div class="prop"><div class="prop-k">Previous</div><div class="prop-v mono"><a href="/block/{{.PrevHash}}">{{.PrevHash}}</a></div></div>
 <div class="prop"><div class="prop-k">Merkle Root</div><div class="prop-v mono">{{.MerkleRoot}}</div></div>
 <div class="prop"><div class="prop-k">Time</div><div class="prop-v">{{.Time}}</div></div>
 <div class="prop"><div class="prop-k">Difficulty</div><div class="prop-v">{{.Difficulty}}</div></div>
@@ -908,7 +922,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <tr><th>Hash</th><th>Type</th><th>Inputs</th><th>Outputs</th></tr>
 {{range .Txs}}
 <tr>
-<td class="hash"><a href="{{$.BasePath}}/tx/{{.Hash}}">{{slice .Hash 0 24}}...</a></td>
+<td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 24}}...</a></td>
 <td>{{if .IsCoinbase}}<span class="g">coinbase</span>{{else}}transfer{{end}}</td>
 <td>{{.Inputs}}</td>
 <td>{{.Outputs}}</td>
@@ -916,7 +930,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{end}}
 </table>
 
-<footer><a href="{{.BasePath}}/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 ` + explorerEggScript + `
 </body>
 </html>`
@@ -942,13 +956,13 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
-<div class="topnav">{{if .IsTestnet}}<a href="/">mainnet</a>   {{else}}<a href="/testnet/">testnet</a>   {{end}}<a href="{{.BasePath}}/">blocks</a>   <a href="{{.BasePath}}/stats">stats</a></div>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<div class="topnav"><a href="/">blocks</a>   <a href="/stats">stats</a></div>
 
 <h2><span class="g">#</span> transaction</h2>
 <div class="box">
 <div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{.Hash}}</div></div>
-<div class="prop"><div class="prop-k">Block</div><div class="prop-v">{{if .InMempool}}<span class="d">Pending (in mempool)</span>{{else}}<a href="{{.BasePath}}/block/{{.BlockHeight}}">{{.BlockHeight}}</a> ({{.Confirmations}} confirmations){{end}}</div></div>
+<div class="prop"><div class="prop-k">Block</div><div class="prop-v">{{if .InMempool}}<span class="d">Pending (in mempool)</span>{{else}}<a href="/block/{{.BlockHeight}}">{{.BlockHeight}}</a> ({{.Confirmations}} confirmations){{end}}</div></div>
 <div class="prop"><div class="prop-k">Type</div><div class="prop-v">{{if .IsCoinbase}}<span class="g">coinbase</span>{{else}}transfer{{end}}</div></div>
 {{if not .IsCoinbase}}<div class="prop"><div class="prop-k">Fee</div><div class="prop-v">{{printf "%.8f" .Fee}} BNT</div></div>{{end}}
 <div class="prop"><div class="prop-k">Inputs</div><div class="prop-v">{{.InputCount}}</div></div>
@@ -981,7 +995,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 </div>
 {{end}}
 
-<footer><a href="{{.BasePath}}/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 ` + explorerEggScript + `
 </body>
 </html>`
@@ -1028,8 +1042,8 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
-<div class="topnav">{{if .IsTestnet}}<a href="/">mainnet</a>  {{else}}<a href="/testnet/">testnet</a>  {{end}}<a href="{{.BasePath}}/">← blocks</a></div>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<div class="topnav"><a href="/">← blocks</a></div>
 
 <h2><span class="g">#</span> network overview</h2>
 <div class="box stats">
@@ -1066,7 +1080,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 <h2><span class="g">#</span> emission schedule</h2>
 <div class="chart-box"><canvas id="c-emission"></canvas></div>
 
-<footer><a href="{{.BasePath}}/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 
 <script>
 var D={{.DataJSON}};

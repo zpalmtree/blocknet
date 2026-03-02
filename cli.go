@@ -499,6 +499,9 @@ func (c *CLI) recoverWalletAfterChainReset() {
 
 func (c *CLI) printLogo() {
 	green := "\033[38;5;118m"
+	if params.IsTestnet {
+		green = "\033[38;2;255;0;170m"
+	}
 	reset := "\033[0m"
 	if c.noColor {
 		green = ""
