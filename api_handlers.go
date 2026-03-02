@@ -1142,12 +1142,14 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 
 	// Compute target for PoW validation
 	target := DifficultyToTarget(block.Header.Difficulty)
+	templateID := s.rememberMiningTemplate(block)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"block":               block,
 		"target":              fmt.Sprintf("%x", target),
 		"header_base":         fmt.Sprintf("%x", block.Header.SerializeForPoW()),
 		"reward_address_used": rewardAddrUsed,
+		"template_id":         templateID,
 	})
 }
 
@@ -1168,10 +1170,39 @@ func (s *APIServer) handleSubmitBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var block Block
-	if err := json.NewDecoder(r.Body).Decode(&block); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+
+	var compact struct {
+		TemplateID string  `json:"template_id"`
+		Nonce      *uint64 `json:"nonce"`
+	}
+	if err := json.Unmarshal(body, &compact); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	var block Block
+	if strings.TrimSpace(compact.TemplateID) != "" {
+		if compact.Nonce == nil {
+			writeError(w, http.StatusBadRequest, "nonce is required with template_id")
+			return
+		}
+		tpl, ok := s.getMiningTemplate(strings.TrimSpace(compact.TemplateID))
+		if !ok {
+			writeError(w, http.StatusBadRequest, "unknown or expired template_id")
+			return
+		}
+		block = *tpl
+		block.Header.Nonce = *compact.Nonce
+	} else {
+		if err := json.Unmarshal(body, &block); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
 	}
 
 	if err := s.daemon.SubmitBlock(&block); err != nil {

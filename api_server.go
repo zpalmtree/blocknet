@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -56,7 +58,21 @@ type APIServer struct {
 
 	// Wallet unlock brute-force controls.
 	unlockAttempts *unlockAttemptTracker
+
+	// Template cache for compact mining submissions ({template_id, nonce}).
+	templateMu    sync.Mutex
+	templateCache map[string]cachedMiningTemplate
 }
+
+type cachedMiningTemplate struct {
+	block     Block
+	createdAt time.Time
+}
+
+const (
+	maxMiningTemplateCacheEntries = 512
+	miningTemplateCacheTTL        = 10 * time.Minute
+)
 
 type perIPLimiter struct {
 	mu      sync.Mutex
@@ -202,12 +218,76 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 		sendIdem:           newIdempotencyCache(10*time.Minute, 1024),
 		verifyLimiter:      newPerIPLimiter(rate.Limit(5), 10, 10*time.Minute),
 		unlockAttempts:     newUnlockAttemptTracker(),
+		templateCache:      make(map[string]cachedMiningTemplate),
 	}
 	if len(password) > 0 {
 		s.passwordHash = passwordHash(password)
 		s.passwordHashSet = true
 	}
 	return s
+}
+
+func (s *APIServer) rememberMiningTemplate(block *Block) string {
+	if block == nil {
+		return ""
+	}
+
+	idBytes := make([]byte, 8)
+	if _, err := rand.Read(idBytes); err != nil {
+		now := time.Now().UnixNano()
+		for i := 0; i < len(idBytes); i++ {
+			idBytes[i] = byte(now >> (8 * i))
+		}
+	}
+	templateID := hex.EncodeToString(idBytes)
+
+	s.templateMu.Lock()
+	defer s.templateMu.Unlock()
+
+	s.pruneMiningTemplatesLocked(time.Now())
+	s.templateCache[templateID] = cachedMiningTemplate{
+		block:     *block,
+		createdAt: time.Now(),
+	}
+	if len(s.templateCache) > maxMiningTemplateCacheEntries {
+		var oldestID string
+		var oldestTime time.Time
+		for id, tpl := range s.templateCache {
+			if oldestID == "" || tpl.createdAt.Before(oldestTime) {
+				oldestID = id
+				oldestTime = tpl.createdAt
+			}
+		}
+		delete(s.templateCache, oldestID)
+	}
+
+	return templateID
+}
+
+func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
+	if templateID == "" {
+		return nil, false
+	}
+
+	now := time.Now()
+	s.templateMu.Lock()
+	defer s.templateMu.Unlock()
+
+	s.pruneMiningTemplatesLocked(now)
+	tpl, ok := s.templateCache[templateID]
+	if !ok {
+		return nil, false
+	}
+	block := tpl.block
+	return &block, true
+}
+
+func (s *APIServer) pruneMiningTemplatesLocked(now time.Time) {
+	for id, tpl := range s.templateCache {
+		if now.Sub(tpl.createdAt) > miningTemplateCacheTTL {
+			delete(s.templateCache, id)
+		}
+	}
 }
 
 // isLocked returns whether the wallet is locked.
@@ -233,7 +313,6 @@ func (s *APIServer) requireWallet(w http.ResponseWriter, _ *http.Request) bool {
 
 // Start launches the full authenticated API server.
 func (s *APIServer) Start(addr string) error {
-	
 
 	token, err := generateToken()
 	if err != nil {
@@ -267,8 +346,6 @@ func (s *APIServer) Start(addr string) error {
 		deleteCookie(s.dataDir)
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
-
-	
 
 	go func() {
 		if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
