@@ -554,8 +554,6 @@ func (d *Daemon) Start() error {
 		}()
 	}
 
-	
-
 	return nil
 }
 
@@ -1161,18 +1159,19 @@ func (d *Daemon) MinerStats() MinerStats {
 // SubmitBlock validates a mined block, adds it to the chain, and broadcasts to peers.
 func (d *Daemon) SubmitBlock(block *Block) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	if err := d.validateSubmitBlockStaleLocked(block); err != nil {
+		d.mu.Unlock()
 		return err
 	}
 
 	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(block)
 	if err != nil {
+		d.mu.Unlock()
 		return fmt.Errorf("failed to process block: %w", err)
 	}
 	if !accepted {
+		d.mu.Unlock()
 		return fmt.Errorf("block not accepted (duplicate or stale)")
 	}
 
@@ -1181,6 +1180,7 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 		d.maybeAppendCheckpointLocked(block)
 		d.miner.NotifyNewBlock()
 	}
+	d.mu.Unlock()
 
 	// Broadcast to peers
 	blockData, err := json.Marshal(block)

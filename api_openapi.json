@@ -1417,7 +1417,7 @@
         "operationId": "getBlockTemplate",
         "tags": ["Mining"],
         "summary": "Get block template for pool mining",
-        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. Pool software should call this to get fresh work, distribute to miners, and submit solved blocks via `POST /api/mining/submitblock`. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
+        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
         "parameters": [
           {
             "name": "address",
@@ -1451,7 +1451,8 @@
                   },
                   "target": "000000000000f4240000000000000000000000000000000000000000000000000",
                   "header_base": "0100000080370000...",
-                  "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4"
+                  "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4",
+                  "template_id": "7b3d2f4a9d11c8ef"
                 }
               }
             }
@@ -1473,9 +1474,12 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Block"
+                "oneOf": [
+                  { "$ref": "#/components/schemas/Block" },
+                  { "$ref": "#/components/schemas/CompactSubmitBlock" }
+                ]
               },
-              "description": "A complete block object with a valid nonce. Typically obtained from `GET /api/mining/blocktemplate` with the nonce field filled in after PoW solving."
+              "description": "Either a complete block object with a valid nonce, or a compact payload containing `template_id` and `nonce`."
             }
           }
         },
@@ -2142,6 +2146,24 @@
           "reward_address_used": {
             "type": "string",
             "description": "The stealth address used for the coinbase output in this template. Mirrors the `address` query parameter if provided; otherwise it is the loaded wallet address."
+          },
+          "template_id": {
+            "type": "string",
+            "description": "Opaque template identifier used for compact submit payloads (`template_id` + `nonce`)."
+          }
+        }
+      },
+      "CompactSubmitBlock": {
+        "type": "object",
+        "required": ["template_id", "nonce"],
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "description": "Template ID returned by GET /api/mining/blocktemplate."
+          },
+          "nonce": {
+            "type": "integer",
+            "description": "PoW nonce found for the referenced template."
           }
         }
       },
