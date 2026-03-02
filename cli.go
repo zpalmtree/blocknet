@@ -190,8 +190,9 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	// Check if wallet exists
 	walletExists := fileExists(cfg.WalletFile)
 
-	// If wallet is missing and we have XDG backups, offer to restore one
-	if !walletExists && !cfg.RecoverMode {
+	// If wallet is missing and we have XDG backups, offer to restore one.
+	// Never offer mainnet backups on testnet — just create a fresh wallet.
+	if !walletExists && !cfg.RecoverMode && !params.IsTestnet {
 		if backups := wallet.ListBackups(); len(backups) > 0 {
 			fmt.Printf("\n%s\n", cli.sectionHead("Wallet Recovery"))
 			fmt.Println("  Your wallet file is missing, but backups were found.")
