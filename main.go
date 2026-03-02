@@ -63,6 +63,9 @@ func main() {
 		if !*fullSync {
 			*fullSync = true
 		}
+		// Clear any mainnet P2P key from the environment so testnet
+		// generates its own identity in the testnet data dir.
+		_ = os.Unsetenv("BLOCKNET_P2P_KEY")
 	}
 
 	if *p2pMaxInbound < 0 {

@@ -220,8 +220,14 @@ var DefaultSeedNodes = []string{
 }
 
 // DefaultTestnetSeedNodes are the hardcoded testnet bootstrap nodes.
-// Populated once testnet seeds are stood up on existing machines with new peer IDs.
-var DefaultTestnetSeedNodes = []string{}
+var DefaultTestnetSeedNodes = []string{
+	"/ip4/46.62.203.242/tcp/38080/p2p/12D3KooWCEsiN7zKfWWq1rWVC9bseiDtnA1ohykXqJmmBvkQs7Sd",
+	"/ip4/46.62.243.192/tcp/38080/p2p/12D3KooWRowneDC78ZuMJEZiZ39x39yPZweh3CGKgo49C6KacL2H",
+	"/ip4/46.62.252.254/tcp/38080/p2p/12D3KooWSffcGmmgMM2G8sYWwdpdPKejWWk8nn5yHKAkaonH73Ap",
+	"/ip4/46.62.202.165/tcp/38080/p2p/12D3KooWRWTaJB23jPk6ZAv4WAHuwbW7DH29SNMDNVSkH5q6SQem",
+	"/ip4/46.62.249.240/tcp/38080/p2p/12D3KooWDKsiuCxjyLUQo2JnG9AA14EPrVPZrVMQaY4VFX5pbFXP",
+	"/ip4/46.62.201.220/tcp/38080/p2p/12D3KooWDFnzMzKEmhPgzgYYW3zrHcQcxvC6shRK6HA7XfFdvg7L",
+}
 
 // DefaultDaemonConfig returns sensible defaults
 func DefaultDaemonConfig() DaemonConfig {
