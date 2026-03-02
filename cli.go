@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"blocknet/protocol/params"
 	"blocknet/wallet"
 
 	"golang.org/x/term"
@@ -181,7 +182,10 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	// Interactive mode: prompt for password and load wallet
 
 	// Backfill XDG backups for any .dat files we find but haven't backed up yet.
-	wallet.BackfillWalletBackups(".", filepath.Dir(cfg.WalletFile))
+	// Skip on testnet to avoid pulling mainnet wallet files into the testnet backup dir.
+	if !params.IsTestnet {
+		wallet.BackfillWalletBackups(".", filepath.Dir(cfg.WalletFile))
+	}
 
 	// Check if wallet exists
 	walletExists := fileExists(cfg.WalletFile)
