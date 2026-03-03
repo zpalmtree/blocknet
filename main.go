@@ -154,7 +154,7 @@ func main() {
 		peerIDPort = TestnetPeerIDPort
 		fallbackSeeds = DefaultTestnetSeedNodes
 	}
-	seedNodes := ResolveSeedNodes(DefaultSeedIPs, p2pPort, peerIDPort)
+	seedNodes := ResolveSeedNodes(DefaultSeedHosts, p2pPort, peerIDPort)
 	if len(seedNodes) == 0 {
 		seedNodes = fallbackSeeds
 	}

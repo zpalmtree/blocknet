@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,28 +20,29 @@ const (
 	TestnetPeerIDPort = 38081
 )
 
-var DefaultSeedIPs = []string{
-	"46.62.203.242",
-	"46.62.243.192",
-	"46.62.252.254",
-	"46.62.202.165",
-	"46.62.249.240",
-	"46.62.201.220",
+var DefaultSeedHosts = []string{
+	"explorer.blocknetcrypto.com",
+	"bnt-0.blocknetcrypto.com",
+	"bnt-1.blocknetcrypto.com",
+	"bnt-2.blocknetcrypto.com",
+	"bnt-3.blocknetcrypto.com",
+	"bnt-4.blocknetcrypto.com",
 }
 
 // ResolveSeedNodes fetches peer IDs from seed nodes' HTTP endpoints
-// and builds full multiaddrs. Fetches run in parallel with a 3s timeout.
-func ResolveSeedNodes(ips []string, p2pPort, peerIDPort int) []string {
+// and builds full multiaddrs. Accepts IPs or hostnames.
+// Fetches run in parallel with a 3s timeout.
+func ResolveSeedNodes(hosts []string, p2pPort, peerIDPort int) []string {
 	type result struct {
 		addr string
 	}
 
-	ch := make(chan result, len(ips))
+	ch := make(chan result, len(hosts))
 	client := &http.Client{Timeout: 3 * time.Second}
 
-	for _, ip := range ips {
-		go func(ip string) {
-			url := fmt.Sprintf("http://%s:%d/", ip, peerIDPort)
+	for _, host := range hosts {
+		go func(host string) {
+			url := fmt.Sprintf("http://%s:%d/", host, peerIDPort)
 			resp, err := client.Get(url)
 			if err != nil {
 				ch <- result{}
@@ -57,12 +59,16 @@ func ResolveSeedNodes(ips []string, p2pPort, peerIDPort int) []string {
 				ch <- result{}
 				return
 			}
-			ch <- result{fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", ip, p2pPort, peerID)}
-		}(ip)
+			proto := "dns4"
+			if net.ParseIP(host) != nil {
+				proto = "ip4"
+			}
+			ch <- result{fmt.Sprintf("/%s/%s/tcp/%d/p2p/%s", proto, host, p2pPort, peerID)}
+		}(host)
 	}
 
 	var seeds []string
-	for range ips {
+	for range hosts {
 		if r := <-ch; r.addr != "" {
 			seeds = append(seeds, r.addr)
 		}
