@@ -268,6 +268,10 @@ func (pex *PeerExchange) connectToSeeds() error {
 	}
 
 	// All retries failed
+	if pex.node.config.SeedMode {
+		log.Printf("Seed mode: no other seeds reachable yet, will retry in background")
+		return nil
+	}
 	return fmt.Errorf("failed to connect to any seed nodes after %d attempts", maxRetries)
 }
 

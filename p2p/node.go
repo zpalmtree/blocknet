@@ -45,6 +45,9 @@ type NodeConfig struct {
 
 	// UserAgent is announced to peers
 	UserAgent string
+
+	// SeedMode allows startup even when other seeds are unreachable
+	SeedMode bool
 }
 
 // DefaultNodeConfig returns sensible defaults

@@ -58,6 +58,7 @@ type CLIConfig struct {
 	SeedNodes       []string
 	P2PMaxInbound   int // If >0, override default max inbound peers
 	P2PMaxOutbound  int // If >0, override default max outbound peers
+	SeedMode        bool
 	Mining          bool
 	MineThreads     int
 	RecoverMode     bool   // If true, prompt for mnemonic to recover wallet
@@ -156,6 +157,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		SeedNodes:       cfg.SeedNodes,
 		P2PMaxInbound:   cfg.P2PMaxInbound,
 		P2PMaxOutbound:  cfg.P2PMaxOutbound,
+		SeedMode:        cfg.SeedMode,
 		ExplorerAddr:    cfg.ExplorerAddr,
 		SaveCheckpoints: cfg.SaveCheckpoints,
 		FullSync:        cfg.FullSync,

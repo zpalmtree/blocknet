@@ -85,25 +85,6 @@ func main() {
 		return
 	}
 
-	// Quarantine well-known legacy default paths before any init work.
-	// This is intentionally conservative: it only quarantines legacy defaults
-	// when the operator did not explicitly provide the corresponding flags.
-	if renames, err := quarantineLegacyDefaults(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: legacy quarantine failed: %v\n", err)
-		os.Exit(1)
-	} else if len(renames) > 0 {
-		for _, r := range renames {
-			absFrom, _ := filepath.Abs(r.From)
-			absTo, _ := filepath.Abs(r.To)
-			if absFrom != "" && absTo != "" {
-				fmt.Fprintf(os.Stderr, "Quarantined legacy path: %s -> %s\n", absFrom, absTo)
-			} else {
-				fmt.Fprintf(os.Stderr, "Quarantined legacy path: %s -> %s\n", r.From, r.To)
-			}
-		}
-		fmt.Fprintln(os.Stderr, "Warning: quarantined paths are pre-relaunch state and must not be reused.")
-	}
-
 	// View-only wallet creation mode
 	if *viewOnly {
 		if *viewPrivDeprecated != "" {
@@ -142,10 +123,20 @@ func main() {
 	}
 
 	// Seed mode: ensure P2P identity is persistent (and stable across restarts).
-	// Honor explicit env override if user set it themselves.
+	// Store in XDG config with network separation so mainnet/testnet don't clobber.
 	if *seedMode && strings.TrimSpace(os.Getenv("BLOCKNET_P2P_KEY")) == "" {
-		if err := os.Setenv("BLOCKNET_P2P_KEY", filepath.Join(*dataDir, "identity.key")); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to set BLOCKNET_P2P_KEY: %v\n", err)
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to get config dir for seed identity: %v\n", err)
+		} else {
+			network := "mainnet"
+			if *testnet {
+				network = "testnet"
+			}
+			keyPath := filepath.Join(configDir, "blocknet", network, "identity.key")
+			if err := os.Setenv("BLOCKNET_P2P_KEY", keyPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to set BLOCKNET_P2P_KEY: %v\n", err)
+			}
 		}
 	}
 	// Seed bootstrap assist: if we fail to start due to missing seed reachability,
@@ -154,10 +145,18 @@ func main() {
 		_ = os.Setenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL", "1")
 	}
 
-	// Normal mode: start interactive CLI
-	seedNodes := DefaultSeedNodes
+	// Resolve seed nodes: try dynamic peer ID fetch, fall back to hardcoded.
+	p2pPort := MainnetP2PPort
+	peerIDPort := MainnetPeerIDPort
+	fallbackSeeds := DefaultSeedNodes
 	if *testnet {
-		seedNodes = DefaultTestnetSeedNodes
+		p2pPort = TestnetP2PPort
+		peerIDPort = TestnetPeerIDPort
+		fallbackSeeds = DefaultTestnetSeedNodes
+	}
+	seedNodes := ResolveSeedNodes(DefaultSeedIPs, p2pPort, peerIDPort)
+	if len(seedNodes) == 0 {
+		seedNodes = fallbackSeeds
 	}
 	if len(flag.Args()) > 0 {
 		seedNodes = append(seedNodes, flag.Args()...)
@@ -177,6 +176,7 @@ func main() {
 		NoVersionCheck:  *noVersionCheck,
 		SaveCheckpoints: *saveCheckpoints,
 		FullSync:        *fullSync,
+		SeedMode:        *seedMode,
 	}
 
 	cli, err := NewCLI(cfg)

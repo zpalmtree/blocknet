@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,11 @@ type Daemon struct {
 	repairTruncatedTo uint64
 	repairViolations  int
 	repairFailed      bool
+
+	// Seed mode
+	seedMode     bool
+	listenAddrs  []string
+	peerIDServer *http.Server
 
 	// State
 	ctx    context.Context
@@ -194,6 +200,7 @@ type DaemonConfig struct {
 	// Optional P2P peer limits (0 uses p2p defaults)
 	P2PMaxInbound  int
 	P2PMaxOutbound int
+	SeedMode       bool
 
 	// Mining
 	EnableMining bool
@@ -370,6 +377,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	if cfg.P2PMaxOutbound > 0 {
 		nodeCfg.MaxOutbound = cfg.P2PMaxOutbound
 	}
+	nodeCfg.SeedMode = cfg.SeedMode
 
 	node, err := p2p.NewNode(nodeCfg)
 	if err != nil {
@@ -393,6 +401,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		repairFailed:           repairFailed,
 		ctx:                    ctx,
 		cancel:                 cancel,
+		seedMode:               cfg.SeedMode,
+		listenAddrs:            cfg.ListenAddrs,
 		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
 	}
 
@@ -551,6 +561,13 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("failed to start P2P: %w", err)
 	}
 
+	// Start peer ID endpoint for seed nodes
+	if d.seedMode && len(d.listenAddrs) > 0 {
+		port := peerIDPortFromMultiaddr(d.listenAddrs[0])
+		d.peerIDServer = startPeerIDServer(d.node, port)
+		log.Printf("Peer ID endpoint listening on :%d", port)
+	}
+
 	// Start sync manager
 	d.syncMgr.Start(d.ctx)
 
@@ -570,6 +587,12 @@ func (d *Daemon) Start() error {
 // Stop gracefully shuts down the daemon
 func (d *Daemon) Stop() error {
 	d.cancel()
+
+	if d.peerIDServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		d.peerIDServer.Shutdown(ctx)
+		cancel()
+	}
 
 	// Stop miner
 	d.miner.Stop()
