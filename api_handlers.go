@@ -1466,8 +1466,11 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 			}
 			return output.TxPrivKey, output.TxPubKey, output.OnetimePubKey, nil
 		},
-		DeriveSharedSecret: DeriveStealthSecretSender,
-		ScalarToPoint:      ScalarToPubKey,
+		DeriveStealthAddressWithKey: DeriveStealthAddressWithKey,
+		DeriveDeterministicTxKey:    DeriveDeterministicTxKey,
+		GenerateKeyImage:            GenerateKeyImage,
+		DeriveSharedSecret:          DeriveStealthSecretSender,
+		ScalarToPoint:               ScalarToPubKey,
 		PointAdd: func(p1, p2 [32]byte) ([32]byte, error) {
 			return CommitmentAdd(p1, p2)
 		},

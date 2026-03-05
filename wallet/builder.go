@@ -58,6 +58,15 @@ type TransferConfig struct {
 	// Stealth address derivation
 	DeriveStealthAddress func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
 
+	// Stealth address derivation with a caller-provided tx private key
+	DeriveStealthAddressWithKey func(spendPub, viewPub, txPriv [32]byte) (txPub, oneTimePub [32]byte, err error)
+
+	// Deterministic tx key derivation from view privkey + key images
+	DeriveDeterministicTxKey func(viewPriv [32]byte, keyImages [][32]byte) ([32]byte, error)
+
+	// Key image generation for deterministic tx key derivation
+	GenerateKeyImage func(privKey [32]byte) ([32]byte, error)
+
 	// ECDH shared secret derivation (sender side): H(txPriv * viewPub)
 	DeriveSharedSecret func(txPriv, viewPub [32]byte) ([32]byte, error)
 
@@ -75,6 +84,36 @@ type TransferConfig struct {
 type Builder struct {
 	wallet *Wallet
 	config TransferConfig
+}
+
+// deriveDeterministicTxKey computes key images for the selected inputs and
+// derives a deterministic tx private key. Falls back to random derivation
+// if the deterministic callbacks are not configured.
+func (b *Builder) deriveDeterministicTxKey(inputs []*OwnedOutput, spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
+	if b.config.DeriveDeterministicTxKey == nil || b.config.GenerateKeyImage == nil || b.config.DeriveStealthAddressWithKey == nil {
+		return b.config.DeriveStealthAddress(spendPub, viewPub)
+	}
+
+	keyImages := make([][32]byte, len(inputs))
+	for i, inp := range inputs {
+		ki, kiErr := b.config.GenerateKeyImage(inp.OneTimePrivKey)
+		if kiErr != nil {
+			return txPriv, txPub, oneTimePub, fmt.Errorf("key image for input %d: %w", i, kiErr)
+		}
+		keyImages[i] = ki
+	}
+
+	viewPriv := b.wallet.Keys().ViewPrivKey
+	txPriv, err = b.config.DeriveDeterministicTxKey(viewPriv, keyImages)
+	if err != nil {
+		return txPriv, txPub, oneTimePub, fmt.Errorf("deterministic tx key: %w", err)
+	}
+
+	txPub, oneTimePub, err = b.config.DeriveStealthAddressWithKey(spendPub, viewPub, txPriv)
+	if err != nil {
+		return txPriv, txPub, oneTimePub, fmt.Errorf("stealth address with key: %w", err)
+	}
+	return txPriv, txPub, oneTimePub, nil
 }
 
 // NewBuilder creates a transaction builder
@@ -175,11 +214,11 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	outputs := make([]outputData, 0, len(recipients)+1)
 
 	// Generate a single tx keypair (r, R) shared across all outputs.
-	// Use DeriveStealthAddress for the first recipient to obtain txPriv/txPub,
-	// then reuse txPriv with each recipient's view key to derive shared secrets
-	// and one-time keys for all subsequent outputs (including change).
-	txPrivKey, txPubKey, firstOneTimePub, err := b.config.DeriveStealthAddress(
-		recipients[0].SpendPubKey, recipients[0].ViewPubKey,
+	// Derive r deterministically from wallet secrets + input key images so it
+	// can be re-derived from seed for sender proofs. Falls back to random
+	// if the deterministic callbacks are not configured.
+	txPrivKey, txPubKey, firstOneTimePub, err := b.deriveDeterministicTxKey(
+		inputs, recipients[0].SpendPubKey, recipients[0].ViewPubKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive stealth address: %w", err)
@@ -389,10 +428,9 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 	}
 
 	sendAmount := totalInput - fee
-	recipient.Amount = sendAmount
 
-	txPrivKey, txPubKey, oneTimePub, err := b.config.DeriveStealthAddress(
-		recipient.SpendPubKey, recipient.ViewPubKey,
+	txPrivKey, txPubKey, oneTimePub, err := b.deriveDeterministicTxKey(
+		inputs, recipient.SpendPubKey, recipient.ViewPubKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive stealth address: %w", err)

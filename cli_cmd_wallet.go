@@ -1008,6 +1008,53 @@ func (c *CLI) cmdViewKeys() error {
 	return nil
 }
 
+func (c *CLI) cmdProve(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: prove <txid>")
+	}
+
+	txHashStr := sanitizeInput(args[0])
+	if len(txHashStr) != 64 {
+		return fmt.Errorf("txid must be 64 hex characters")
+	}
+
+	tx, _, found := c.daemon.Chain().FindTxByHashStr(txHashStr)
+	if !found {
+		return fmt.Errorf("transaction not found on chain")
+	}
+
+	if len(tx.Inputs) == 0 {
+		return fmt.Errorf("coinbase transactions have no sender proof")
+	}
+
+	keyImages := make([][32]byte, len(tx.Inputs))
+	for i, inp := range tx.Inputs {
+		keyImages[i] = inp.KeyImage
+	}
+
+	keys := c.wallet.Keys()
+	txPriv, err := DeriveDeterministicTxKey(keys.ViewPrivKey, keyImages)
+	if err != nil {
+		return fmt.Errorf("failed to derive tx key: %w", err)
+	}
+
+	derivedPub, err := ScalarToPubKey(txPriv)
+	if err != nil {
+		return fmt.Errorf("failed to derive public key: %w", err)
+	}
+
+	if derivedPub != tx.TxPublicKey {
+		return fmt.Errorf("tx private key does not match — this transaction was not sent by this wallet (or was sent before deterministic tx keys)")
+	}
+
+	fmt.Printf("\n%s\n", c.sectionHead("Prove Payment"))
+	fmt.Printf("  Tx:          %s\n", txHashStr)
+	fmt.Printf("  Tx Key:      %x\n", txPriv)
+	fmt.Printf("  Explorer:    https://explorer.blocknetcrypto.com/tx/%s\n", txHashStr)
+
+	return nil
+}
+
 func (c *CLI) cmdLock() {
 	c.locked = true
 	fmt.Printf("\n%s\n", c.sectionHead("Locked"))

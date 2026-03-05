@@ -9,8 +9,8 @@ package main
 */
 import "C"
 import (
-	"fmt"
 	"crypto/sha3"
+	"fmt"
 	"unsafe"
 )
 
@@ -521,6 +521,47 @@ func ScalarToPubKey(privKey [32]byte) ([32]byte, error) {
 	}
 
 	return pubKey, nil
+}
+
+// DeriveStealthAddressWithKey creates a one-time address using a caller-provided tx private key.
+// Same math as DeriveStealthAddress but uses txPrivKey instead of generating a random r.
+func DeriveStealthAddressWithKey(spendPubKey, viewPubKey, txPrivKey [32]byte) (txPubKey, onetimePubKey [32]byte, err error) {
+	result := C.blocknet_stealth_derive_address_with_key(
+		(*C.uint8_t)(unsafe.Pointer(&spendPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&viewPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&txPrivKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&txPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&onetimePubKey[0])),
+	)
+	if result != 0 {
+		return txPubKey, onetimePubKey, fmt.Errorf("failed to derive stealth address with key")
+	}
+	return txPubKey, onetimePubKey, nil
+}
+
+// DeriveDeterministicTxKey derives a deterministic tx private key from view_privkey and key images.
+// The same wallet seed + same spent inputs always produces the same r, making it recoverable.
+func DeriveDeterministicTxKey(viewPrivKey [32]byte, keyImages [][32]byte) ([32]byte, error) {
+	var txPrivKey [32]byte
+	if len(keyImages) == 0 {
+		return txPrivKey, fmt.Errorf("no key images provided")
+	}
+
+	flat := make([]byte, len(keyImages)*32)
+	for i, ki := range keyImages {
+		copy(flat[i*32:], ki[:])
+	}
+
+	result := C.blocknet_derive_deterministic_tx_key(
+		(*C.uint8_t)(unsafe.Pointer(&viewPrivKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&flat[0])),
+		C.size_t(len(keyImages)),
+		(*C.uint8_t)(unsafe.Pointer(&txPrivKey[0])),
+	)
+	if result != 0 {
+		return txPrivKey, fmt.Errorf("failed to derive deterministic tx key")
+	}
+	return txPrivKey, nil
 }
 
 // ============================================================================

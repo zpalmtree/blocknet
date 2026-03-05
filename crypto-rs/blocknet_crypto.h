@@ -214,6 +214,26 @@ int32_t blocknet_stealth_derive_secret_sender(
     uint8_t* secret_out
 );
 
+// Derive one-time stealth address using a caller-provided tx private key
+// Same as blocknet_stealth_derive_address but uses the given r instead of random
+int32_t blocknet_stealth_derive_address_with_key(
+    const uint8_t* spend_pubkey,
+    const uint8_t* view_pubkey,
+    const uint8_t* tx_privkey,
+    uint8_t* tx_pubkey_out,
+    uint8_t* onetime_pubkey_out
+);
+
+// Derive deterministic tx private key from view_privkey and key images
+// r = hash_to_scalar("blocknet_deterministic_tx_key" || view_priv || sorted(key_images))
+// key_images: n_images * 32 bytes
+int32_t blocknet_derive_deterministic_tx_key(
+    const uint8_t* view_privkey,
+    const uint8_t* key_images,
+    size_t n_images,
+    uint8_t* tx_privkey_out
+);
+
 // Convert scalar private key to public key
 int32_t blocknet_scalar_to_pubkey(
     const uint8_t* privkey,

@@ -394,6 +394,119 @@ pub extern "C" fn blocknet_scalar_to_pubkey(
     0
 }
 
+/// Derive a one-time stealth address using a caller-provided tx private key.
+/// Identical to blocknet_stealth_derive_address but accepts r instead of
+/// generating a random one.
+#[no_mangle]
+pub extern "C" fn blocknet_stealth_derive_address_with_key(
+    spend_pubkey: *const u8,
+    view_pubkey: *const u8,
+    tx_privkey: *const u8,
+    tx_pubkey_out: *mut u8,
+    onetime_pubkey_out: *mut u8,
+) -> i32 {
+    if spend_pubkey.is_null()
+        || view_pubkey.is_null()
+        || tx_privkey.is_null()
+        || tx_pubkey_out.is_null()
+        || onetime_pubkey_out.is_null()
+    {
+        return -1;
+    }
+
+    unsafe {
+        let spend_bytes = slice::from_raw_parts(spend_pubkey, 32);
+        let view_bytes = slice::from_raw_parts(view_pubkey, 32);
+        let tx_priv_bytes = slice::from_raw_parts(tx_privkey, 32);
+
+        let spend_pub = match CompressedRistretto::from_slice(spend_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        let view_pub = match CompressedRistretto::from_slice(view_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        let r = match Scalar::from_canonical_bytes(
+            tx_priv_bytes.try_into().expect("slice length")
+        )
+        .into_option()
+        {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        let tx_pub = &r * RISTRETTO_BASEPOINT_TABLE;
+        let shared_point = r * view_pub;
+        let shared_secret = hash_to_scalar(shared_point.compress().as_bytes());
+        let onetime_pub = &shared_secret * RISTRETTO_BASEPOINT_TABLE + spend_pub;
+
+        let tx_pub_out = slice::from_raw_parts_mut(tx_pubkey_out, 32);
+        tx_pub_out.copy_from_slice(tx_pub.compress().as_bytes());
+
+        let onetime_out = slice::from_raw_parts_mut(onetime_pubkey_out, 32);
+        onetime_out.copy_from_slice(onetime_pub.compress().as_bytes());
+    }
+
+    0
+}
+
+/// Derive a deterministic tx private key from view_privkey and a set of key images.
+/// r = hash_to_scalar("blocknet_deterministic_tx_key" || view_privkey || sorted(key_images))
+///
+/// key_images: n * 32 bytes of key images (will be sorted internally)
+/// n_images: number of key images
+#[no_mangle]
+pub extern "C" fn blocknet_derive_deterministic_tx_key(
+    view_privkey: *const u8,
+    key_images: *const u8,
+    n_images: usize,
+    tx_privkey_out: *mut u8,
+) -> i32 {
+    if view_privkey.is_null() || key_images.is_null() || tx_privkey_out.is_null() || n_images == 0
+    {
+        return -1;
+    }
+
+    unsafe {
+        let view_priv_bytes = slice::from_raw_parts(view_privkey, 32);
+        let images_bytes = slice::from_raw_parts(key_images, n_images * 32);
+
+        let mut sorted_images: Vec<[u8; 32]> = Vec::with_capacity(n_images);
+        for i in 0..n_images {
+            let mut img = [0u8; 32];
+            img.copy_from_slice(&images_bytes[i * 32..(i + 1) * 32]);
+            sorted_images.push(img);
+        }
+        sorted_images.sort();
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"blocknet_deterministic_tx_key");
+        hasher.update(view_priv_bytes);
+        for img in &sorted_images {
+            hasher.update(img);
+        }
+        let hash = hasher.finalize();
+
+        let mut wide = [0u8; 64];
+        wide[..32].copy_from_slice(&hash);
+        let r = Scalar::from_bytes_mod_order_wide(&wide);
+
+        let out = slice::from_raw_parts_mut(tx_privkey_out, 32);
+        out.copy_from_slice(r.as_bytes());
+    }
+
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +599,107 @@ mod tests {
             onetime_pub.as_ptr(),
         );
         assert_eq!(check_result, -1); // Not theirs!
+    }
+
+    #[test]
+    fn test_deterministic_tx_key_roundtrip() {
+        let mut receiver_keys = [0u8; 128];
+        blocknet_stealth_keygen(receiver_keys.as_mut_ptr());
+
+        let spend_pub = &receiver_keys[32..64];
+        let view_priv = &receiver_keys[64..96];
+        let view_pub = &receiver_keys[96..128];
+
+        // Fake key images (would come from inputs in real usage)
+        let ki1 = [0xaau8; 32];
+        let ki2 = [0xbbu8; 32];
+        let mut key_images = [0u8; 64];
+        key_images[..32].copy_from_slice(&ki1);
+        key_images[32..].copy_from_slice(&ki2);
+
+        // Derive deterministic r
+        let mut tx_priv = [0u8; 32];
+        assert_eq!(
+            blocknet_derive_deterministic_tx_key(
+                view_priv.as_ptr(),
+                key_images.as_ptr(),
+                2,
+                tx_priv.as_mut_ptr(),
+            ),
+            0
+        );
+
+        // Derive again — must produce same r
+        let mut tx_priv2 = [0u8; 32];
+        assert_eq!(
+            blocknet_derive_deterministic_tx_key(
+                view_priv.as_ptr(),
+                key_images.as_ptr(),
+                2,
+                tx_priv2.as_mut_ptr(),
+            ),
+            0
+        );
+        assert_eq!(tx_priv, tx_priv2);
+
+        // Use r to derive stealth address
+        let mut tx_pub = [0u8; 32];
+        let mut onetime_pub = [0u8; 32];
+        assert_eq!(
+            blocknet_stealth_derive_address_with_key(
+                spend_pub.as_ptr(),
+                view_pub.as_ptr(),
+                tx_priv.as_ptr(),
+                tx_pub.as_mut_ptr(),
+                onetime_pub.as_mut_ptr(),
+            ),
+            0
+        );
+
+        // Receiver should recognize the output
+        let check = blocknet_stealth_check_output(
+            spend_pub.as_ptr(),
+            view_priv.as_ptr(),
+            tx_pub.as_ptr(),
+            onetime_pub.as_ptr(),
+        );
+        assert_eq!(check, 0);
+
+        // Verify r * G == tx_pub
+        let mut derived_pub = [0u8; 32];
+        assert_eq!(
+            blocknet_scalar_to_pubkey(tx_priv.as_ptr(), derived_pub.as_mut_ptr()),
+            0
+        );
+        assert_eq!(tx_pub, derived_pub);
+    }
+
+    #[test]
+    fn test_deterministic_tx_key_order_independent() {
+        let mut keys = [0u8; 128];
+        blocknet_stealth_keygen(keys.as_mut_ptr());
+        let view_priv = &keys[64..96];
+
+        let ki1 = [0x11u8; 32];
+        let ki2 = [0x22u8; 32];
+
+        // Order A: ki1, ki2
+        let mut images_a = [0u8; 64];
+        images_a[..32].copy_from_slice(&ki1);
+        images_a[32..].copy_from_slice(&ki2);
+
+        // Order B: ki2, ki1
+        let mut images_b = [0u8; 64];
+        images_b[..32].copy_from_slice(&ki2);
+        images_b[32..].copy_from_slice(&ki1);
+
+        let mut r_a = [0u8; 32];
+        let mut r_b = [0u8; 32];
+
+        blocknet_derive_deterministic_tx_key(view_priv.as_ptr(), images_a.as_ptr(), 2, r_a.as_mut_ptr());
+        blocknet_derive_deterministic_tx_key(view_priv.as_ptr(), images_b.as_ptr(), 2, r_b.as_mut_ptr());
+
+        assert_eq!(r_a, r_b, "key image order must not affect derived r");
     }
 }
 
