@@ -34,6 +34,9 @@ type NodeConfig struct {
 	// SeedNodes are bootstrap peers to connect to initially
 	SeedNodes []string
 
+	// BanWhitelist contains peer IDs that must never be banned.
+	BanWhitelist []string
+
 	// MaxInbound is the maximum number of inbound connections
 	MaxInbound int
 
@@ -182,7 +185,12 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 	}
 
 	// Create peer exchange before host so ban state is available to connection gating.
-	node.pex = NewPeerExchange(node, cfg.SeedNodes)
+	banWhitelist, err := newPeerIDSet(cfg.BanWhitelist)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("invalid ban whitelist: %w", err)
+	}
+	node.pex = NewPeerExchange(node, cfg.SeedNodes, banWhitelist)
 	banGater := NewBanGater(func(pid peer.ID) bool {
 		return node.IsBanned(pid)
 	})

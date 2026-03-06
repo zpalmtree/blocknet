@@ -56,6 +56,7 @@ type CLIConfig struct {
 	DataDir         string
 	ListenAddrs     []string
 	SeedNodes       []string
+	P2PWhitelistPeers []string
 	P2PMaxInbound   int // If >0, override default max inbound peers
 	P2PMaxOutbound  int // If >0, override default max outbound peers
 	SeedMode        bool
@@ -148,6 +149,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		DataDir:         cfg.DataDir,
 		ListenAddrs:     cfg.ListenAddrs,
 		SeedNodes:       cfg.SeedNodes,
+		P2PWhitelistPeers: cfg.P2PWhitelistPeers,
 		P2PMaxInbound:   cfg.P2PMaxInbound,
 		P2PMaxOutbound:  cfg.P2PMaxOutbound,
 		SeedMode:        cfg.SeedMode,

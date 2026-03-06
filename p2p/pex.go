@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/big"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,6 +165,7 @@ type PeerExchange struct {
 	node       *Node
 	seedNodes  []peer.AddrInfo
 	knownPeers map[peer.ID]*PeerRecord
+	banWhitelist map[peer.ID]struct{}
 
 	// Ban list
 	bannedPeers map[peer.ID]*BanRecord
@@ -175,8 +177,24 @@ type PeerExchange struct {
 	cancel context.CancelFunc
 }
 
+func newPeerIDSet(ids []string) (map[peer.ID]struct{}, error) {
+	set := make(map[peer.ID]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			return nil, fmt.Errorf("peer ID must not be empty")
+		}
+		parsed, err := peer.Decode(id)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", raw, err)
+		}
+		set[parsed] = struct{}{}
+	}
+	return set, nil
+}
+
 // NewPeerExchange creates a new peer exchange manager
-func NewPeerExchange(node *Node, seedAddrs []string) *PeerExchange {
+func NewPeerExchange(node *Node, seedAddrs []string, banWhitelist map[peer.ID]struct{}) *PeerExchange {
 	seeds := make([]peer.AddrInfo, 0, len(seedAddrs))
 	for _, addr := range seedAddrs {
 		ma, err := multiaddr.NewMultiaddr(addr)
@@ -189,14 +207,23 @@ func NewPeerExchange(node *Node, seedAddrs []string) *PeerExchange {
 		}
 		seeds = append(seeds, *pi)
 	}
+	if banWhitelist == nil {
+		banWhitelist = make(map[peer.ID]struct{})
+	}
 
 	return &PeerExchange{
 		node:         node,
 		seedNodes:    seeds,
 		knownPeers:   make(map[peer.ID]*PeerRecord),
+		banWhitelist: banWhitelist,
 		bannedPeers:  make(map[peer.ID]*BanRecord),
 		lastExchange: make(map[peer.ID]time.Time),
 	}
+}
+
+func (pex *PeerExchange) isWhitelistedLocked(pid peer.ID) bool {
+	_, ok := pex.banWhitelist[pid]
+	return ok
 }
 
 // Start begins peer exchange operations
@@ -779,6 +806,10 @@ func (pex *PeerExchange) IsBanned(pid peer.ID) bool {
 	pex.mu.RLock()
 	defer pex.mu.RUnlock()
 
+	if pex.isWhitelistedLocked(pid) {
+		return false
+	}
+
 	ban, exists := pex.bannedPeers[pid]
 	if !exists {
 		return false
@@ -805,6 +836,10 @@ func (pex *PeerExchange) BanPeer(pid peer.ID, reason string, duration time.Durat
 
 // banPeerLocked bans a peer (caller must hold lock)
 func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time.Duration) {
+	if pex.isWhitelistedLocked(pid) {
+		delete(pex.bannedPeers, pid)
+		return
+	}
 	for _, seed := range pex.seedNodes {
 		if seed.ID == pid {
 			return
@@ -916,6 +951,9 @@ func (pex *PeerExchange) GetBannedPeers() []*BanRecord {
 	var bans []*BanRecord
 	now := time.Now()
 	for _, ban := range pex.bannedPeers {
+		if pex.isWhitelistedLocked(ban.PeerID) {
+			continue
+		}
 		if ban.Permanent || now.Before(ban.ExpiresAt) {
 			bans = append(bans, ban)
 		}
@@ -1032,6 +1070,9 @@ func (pex *PeerExchange) BannedPeerCount() int {
 	count := 0
 	now := time.Now()
 	for _, ban := range pex.bannedPeers {
+		if pex.isWhitelistedLocked(ban.PeerID) {
+			continue
+		}
 		if ban.Permanent || now.Before(ban.ExpiresAt) {
 			count++
 		}

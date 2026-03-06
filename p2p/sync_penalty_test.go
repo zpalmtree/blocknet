@@ -10,7 +10,7 @@ import (
 
 func newPenaltyTestNode() *Node {
 	n := &Node{}
-	n.pex = NewPeerExchange(n, nil)
+	n.pex = NewPeerExchange(n, nil, nil)
 	return n
 }
 

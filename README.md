@@ -90,6 +90,7 @@ quit                exit
 --wallet <path>     wallet file (default: wallet.dat)
 --data <path>       data directory (default: ./data)
 --listen <addr>     p2p listen address (default: /ip4/0.0.0.0/tcp/28080)
+--p2p-whitelist-peer <peer-id>  exempt a peer ID from bans (repeat or comma-separate)
 --seed              run as seed node (persistent P2P identity saved under data dir)
 --daemon            headless mode (no interactive shell)
 --recover           recover wallet from mnemonic
