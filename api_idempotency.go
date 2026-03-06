@@ -2,6 +2,12 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -12,10 +18,11 @@ type idempotencyResult struct {
 }
 
 type idempotencyCache struct {
-	mu         sync.Mutex
-	ttl        time.Duration
-	maxEntries int
-	entries    map[string]*idempotencyEntry
+	mu          sync.Mutex
+	ttl         time.Duration
+	maxEntries  int
+	entries     map[string]*idempotencyEntry
+	persistPath string
 }
 
 type idempotencyEntry struct {
@@ -25,12 +32,26 @@ type idempotencyEntry struct {
 	result    idempotencyResult
 }
 
-func newIdempotencyCache(ttl time.Duration, maxEntries int) *idempotencyCache {
-	return &idempotencyCache{
-		ttl:        ttl,
-		maxEntries: maxEntries,
-		entries:    make(map[string]*idempotencyEntry),
+type persistedIdempotencyEntry struct {
+	CreatedAtUnixNano int64  `json:"created_at_unix_nano"`
+	ReqHashHex        string `json:"req_hash_hex"`
+	Status            int    `json:"status"`
+	BodyBase64        string `json:"body_base64"`
+}
+
+type persistedIdempotencyState struct {
+	Entries map[string]persistedIdempotencyEntry `json:"entries"`
+}
+
+func newIdempotencyCache(ttl time.Duration, maxEntries int, persistPath string) *idempotencyCache {
+	c := &idempotencyCache{
+		ttl:         ttl,
+		maxEntries:  maxEntries,
+		entries:     make(map[string]*idempotencyEntry),
+		persistPath: persistPath,
 	}
+	c.loadPersisted()
+	return c
 }
 
 func (c *idempotencyCache) getOrStart(now time.Time, key string, reqHash [32]byte) (state string, res idempotencyResult) {
@@ -82,12 +103,21 @@ func (c *idempotencyCache) complete(now time.Time, key string, reqHash [32]byte,
 	e.inFlight = false
 	e.result = idempotencyResult{status: status, body: append([]byte(nil), body...)}
 	c.enforceCapLocked()
+	if err := c.persistLocked(); err != nil {
+		log.Printf("Warning: failed to persist idempotency cache: %v", err)
+	}
 }
 
 func (c *idempotencyCache) abandon(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, ok := c.entries[key]; !ok {
+		return
+	}
 	delete(c.entries, key)
+	if err := c.persistLocked(); err != nil {
+		log.Printf("Warning: failed to persist idempotency cache: %v", err)
+	}
 }
 
 func (c *idempotencyCache) pruneLocked(now time.Time) {
@@ -138,3 +168,85 @@ func hashRequestBody(body []byte) [32]byte {
 	return sha256.Sum256(body)
 }
 
+func (c *idempotencyCache) loadPersisted() {
+	if c.persistPath == "" {
+		return
+	}
+
+	data, err := os.ReadFile(c.persistPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		log.Printf("Warning: failed to read idempotency cache %s: %v", c.persistPath, err)
+		return
+	}
+
+	var persisted persistedIdempotencyState
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		log.Printf("Warning: failed to parse idempotency cache %s: %v", c.persistPath, err)
+		return
+	}
+
+	now := time.Now()
+	for key, entry := range persisted.Entries {
+		reqHashBytes, err := hex.DecodeString(entry.ReqHashHex)
+		if err != nil || len(reqHashBytes) != sha256.Size {
+			continue
+		}
+		body, err := base64.StdEncoding.DecodeString(entry.BodyBase64)
+		if err != nil {
+			continue
+		}
+
+		var reqHash [32]byte
+		copy(reqHash[:], reqHashBytes)
+		c.entries[key] = &idempotencyEntry{
+			createdAt: time.Unix(0, entry.CreatedAtUnixNano),
+			reqHash:   reqHash,
+			inFlight:  false,
+			result: idempotencyResult{
+				status: entry.Status,
+				body:   body,
+			},
+		}
+	}
+	c.pruneLocked(now)
+	c.enforceCapLocked()
+}
+
+func (c *idempotencyCache) persistLocked() error {
+	if c.persistPath == "" {
+		return nil
+	}
+
+	persisted := persistedIdempotencyState{
+		Entries: make(map[string]persistedIdempotencyEntry),
+	}
+	for key, entry := range c.entries {
+		if entry == nil || entry.inFlight {
+			continue
+		}
+		persisted.Entries[key] = persistedIdempotencyEntry{
+			CreatedAtUnixNano: entry.createdAt.UnixNano(),
+			ReqHashHex:        hex.EncodeToString(entry.reqHash[:]),
+			Status:            entry.result.status,
+			BodyBase64:        base64.StdEncoding.EncodeToString(entry.result.body),
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(c.persistPath), 0o700); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		return err
+	}
+
+	tmpPath := c.persistPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, c.persistPath)
+}

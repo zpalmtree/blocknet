@@ -499,6 +499,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	cacheKey := ""
 	var reqHash [32]byte
 	if idemKey != "" {
 		if len(idemKey) > 128 {
@@ -506,7 +507,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reqHash = hashRequestBody(bodyBytes)
-		cacheKey := "send:" + idemKey
+		cacheKey = "send:" + idemKey
 		state, res := s.sendIdem.getOrStart(time.Now(), cacheKey, reqHash)
 		switch state {
 		case "replay":
@@ -634,6 +635,10 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	builder := s.createTxBuilder()
 	result, err := builder.Transfer([]wallet.Recipient{recipient}, sendFeePerByte, height)
 	if err != nil {
+		if status, msg, ok := walletSendClientError(err); ok {
+			writeError(w, status, msg)
+			return
+		}
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
@@ -681,7 +686,19 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	if len(memo) > 0 {
 		resp["memo_hex"] = hex.EncodeToString(memo)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	respBody, err := encodeJSONResponse(resp)
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
+	if cacheKey != "" {
+		s.sendIdem.complete(time.Now(), cacheKey, reqHash, http.StatusOK, respBody)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(respBody); err != nil {
+		log.Printf("Warning: failed to write JSON response: %v", err)
+	}
 }
 
 // handleSendAdvanced builds a transaction using caller-specified inputs (coin control).
@@ -1752,6 +1769,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+func encodeJSONResponse(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
@@ -1770,6 +1795,20 @@ func writeInternal(w http.ResponseWriter, r *http.Request, status int, clientMsg
 	}
 	log.Printf("API internal error: %s %s: %v", method, path, err)
 	writeError(w, status, clientMsg)
+}
+
+func walletSendClientError(err error) (int, string, bool) {
+	if err == nil {
+		return 0, "", false
+	}
+	msg := err.Error()
+	if errors.Is(err, wallet.ErrNoSpendableOutputs) ||
+		errors.Is(err, wallet.ErrInsufficientFunds) ||
+		strings.Contains(msg, "insufficient funds") ||
+		strings.Contains(msg, "no spendable outputs") {
+		return http.StatusBadRequest, msg, true
+	}
+	return 0, "", false
 }
 
 // blockToJSON builds a JSON-friendly block representation.

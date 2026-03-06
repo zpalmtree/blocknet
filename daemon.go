@@ -1258,7 +1258,9 @@ func (d *Daemon) SubmitTransaction(txData []byte) error {
 	}
 
 	// Broadcast via Dandelion++ for privacy.
-	d.node.BroadcastTx(txData)
+	if d.node != nil {
+		d.node.BroadcastTx(txData)
+	}
 
 	return nil
 }
