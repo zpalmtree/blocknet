@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -44,6 +45,27 @@ func (f *peerIDListFlag) Set(value string) error {
 	return nil
 }
 
+func loadWhitelistFile(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return nil, fmt.Errorf("expected JSON array of peer ID strings: %w", err)
+	}
+	for i, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			return nil, fmt.Errorf("entry %d: peer ID must not be empty", i)
+		}
+		if _, err := peer.Decode(id); err != nil {
+			return nil, fmt.Errorf("entry %d: invalid peer ID %q: %w", i, id, err)
+		}
+	}
+	return ids, nil
+}
+
 func main() {
 	// Parse command line flags
 	version := flag.Bool("version", false, "Print version and exit")
@@ -65,6 +87,7 @@ func main() {
 	outputPeerAddr := flag.Bool("output-peer-address", false, "Load identity key, resolve public IP, write peer.txt and exit")
 	var p2pWhitelistPeers peerIDListFlag
 	flag.Var(&p2pWhitelistPeers, "p2p-whitelist-peer", "Peer ID to exempt from peer bans (repeatable or comma-separated)")
+	p2pWhitelistFile := flag.String("p2p-whitelist", "", "Path to JSON file containing peer IDs to exempt from bans")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
 	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
@@ -189,12 +212,36 @@ func main() {
 	if len(flag.Args()) > 0 {
 		seedNodes = append(seedNodes, flag.Args()...)
 	}
+
+	whitelistPeers := []string(p2pWhitelistPeers)
+	whitelistPath := *p2pWhitelistFile
+	if whitelistPath == "" {
+		if configDir, err := os.UserConfigDir(); err == nil {
+			network := "mainnet"
+			if *testnet {
+				network = "testnet"
+			}
+			candidate := filepath.Join(configDir, "blocknet", network, "whitelist.json")
+			if _, err := os.Stat(candidate); err == nil {
+				whitelistPath = candidate
+			}
+		}
+	}
+	if whitelistPath != "" {
+		filePeers, err := loadWhitelistFile(whitelistPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading whitelist file %s: %v\n", whitelistPath, err)
+			os.Exit(1)
+		}
+		whitelistPeers = append(whitelistPeers, filePeers...)
+	}
+
 	cfg := CLIConfig{
 		WalletFile:      *walletFile,
 		DataDir:         *dataDir,
 		ListenAddrs:     []string{*listen},
 		SeedNodes:       seedNodes,
-		P2PWhitelistPeers: []string(p2pWhitelistPeers),
+		P2PWhitelistPeers: whitelistPeers,
 		P2PMaxInbound:   *p2pMaxInbound,
 		P2PMaxOutbound:  *p2pMaxOutbound,
 		RecoverMode:     *recover,

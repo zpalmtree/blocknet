@@ -91,6 +91,8 @@ quit                exit
 --data <path>       data directory (default: ./data)
 --listen <addr>     p2p listen address (default: /ip4/0.0.0.0/tcp/28080)
 --p2p-whitelist-peer <peer-id>  exempt a peer ID from bans (repeat or comma-separate)
+--p2p-whitelist <path>          path to JSON file of peer IDs to exempt from bans
+                                (auto-loads <XDG config>/blocknet/<network>/whitelist.json if present)
 --seed              run as seed node (persistent P2P identity saved under data dir)
 --daemon            headless mode (no interactive shell)
 --recover           recover wallet from mnemonic
