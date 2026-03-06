@@ -785,6 +785,14 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
+		ki, err := GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			return false
+		}
+		return s.daemon.Mempool().HasKeyImage(ki)
+	})
+
 	// Publish to API server
 	s.mu.Lock()
 	s.wallet = wl
@@ -903,6 +911,14 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
+		ki, err := GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			return false
+		}
+		return s.daemon.Mempool().HasKeyImage(ki)
+	})
 
 	// Publish to API server
 	s.mu.Lock()

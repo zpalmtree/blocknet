@@ -316,6 +316,11 @@ type Wallet struct {
 	inputReservations map[reservedOutpoint]inputReservation
 	nextLease         atomic.Uint64
 
+	// inputFilter, when set, is called during input selection. If it returns
+	// true for an output, that output is excluded from candidates. Used to
+	// skip outputs whose key images are already in the mempool.
+	inputFilter func(*OwnedOutput) bool
+
 	// Diagnostics counters (not persisted).
 	memoDecryptFailures   atomic.Uint64
 	memoDecryptLastHeight atomic.Uint64
@@ -886,6 +891,9 @@ func (w *Wallet) ReserveMatureInputs(currentHeight uint64, targetAmount uint64, 
 		if _, reserved := w.inputReservations[op]; reserved {
 			continue
 		}
+		if w.inputFilter != nil && w.inputFilter(out) {
+			continue
+		}
 		candidates = append(candidates, out)
 	}
 
@@ -960,6 +968,9 @@ func (w *Wallet) ReserveAllMatureInputs(currentHeight uint64, ttl time.Duration)
 		if _, reserved := w.inputReservations[op]; reserved {
 			continue
 		}
+		if w.inputFilter != nil && w.inputFilter(out) {
+			continue
+		}
 		candidates = append(candidates, out)
 	}
 
@@ -987,6 +998,14 @@ func (w *Wallet) ReserveAllMatureInputs(currentHeight uint64, ttl time.Duration)
 	}
 
 	return lease, inputs, nil
+}
+
+// SetInputFilter installs a predicate that is checked during input selection.
+// If fn returns true for an output, that output is skipped. Pass nil to clear.
+func (w *Wallet) SetInputFilter(fn func(*OwnedOutput) bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.inputFilter = fn
 }
 
 // ReleaseInputLease releases all reservations held by a given lease id.

@@ -311,6 +311,16 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	}
 	cli.daemon = daemon
 
+	// Exclude outputs whose key images are already in the mempool so
+	// back-to-back sends don't collide on the same key image.
+	w.SetInputFilter(func(out *wallet.OwnedOutput) bool {
+		ki, err := GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			return false
+		}
+		return daemon.Mempool().HasKeyImage(ki)
+	})
+
 	if daemon.repairFailed {
 		fmt.Printf("\n%s\n", cli.errorHead("Chain Repair Failed"))
 		fmt.Printf("  Found %d integrity violation(s) but could not auto-repair\n", daemon.repairViolations)
