@@ -14,6 +14,9 @@ import (
 	"blocknet/p2p"
 	"blocknet/protocol/params"
 	"blocknet/wallet"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 const Version = "0.7.0"
@@ -36,6 +39,7 @@ func main() {
 	noVersionCheck := flag.Bool("no-version-check", false, "Disable remote version check on startup")
 	saveCheckpoints := flag.Bool("save-checkpoints", false, "Append a record to checkpoints.dat every 100 blocks (writes to data dir)")
 	fullSync := flag.Bool("full-sync", false, "Bypass checkpoints (download + verification) and sync naturally from peers")
+	syncFromPeers := flag.Bool("sync-from", false, "Only sync blocks and mempool from peer multiaddrs passed on the command line")
 	outputPeerAddr := flag.Bool("output-peer-address", false, "Load identity key, resolve public IP, write peer.txt and exit")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
@@ -43,6 +47,17 @@ func main() {
 	viewPrivDeprecated := flag.String("view-priv", "", "DEPRECATED (insecure): do not pass view private key via CLI; use --view-priv-env/BLOCKNET_VIEW_PRIV")
 	viewPrivEnv := flag.String("view-priv-env", "BLOCKNET_VIEW_PRIV", "Environment variable name containing view private key (hex) for view-only wallet")
 	flag.Parse()
+
+	cmdlinePeers := append([]string(nil), flag.Args()...)
+	syncPeerAllowlist, err := peerIDsFromMultiaddrs(cmdlinePeers)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid peer multiaddr: %v\n", err)
+		os.Exit(1)
+	}
+	if *syncFromPeers && len(syncPeerAllowlist) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: --sync-from requires at least one peer multiaddr argument")
+		os.Exit(1)
+	}
 
 	if *version {
 		fmt.Println(Version)
@@ -158,14 +173,15 @@ func main() {
 	if len(seedNodes) == 0 {
 		seedNodes = fallbackSeeds
 	}
-	if len(flag.Args()) > 0 {
-		seedNodes = append(seedNodes, flag.Args()...)
+	if len(cmdlinePeers) > 0 {
+		seedNodes = append(seedNodes, cmdlinePeers...)
 	}
 	cfg := CLIConfig{
 		WalletFile:      *walletFile,
 		DataDir:         *dataDir,
 		ListenAddrs:     []string{*listen},
 		SeedNodes:       seedNodes,
+		SyncPeerIDs:     syncPeerAllowlist,
 		P2PMaxInbound:   *p2pMaxInbound,
 		P2PMaxOutbound:  *p2pMaxOutbound,
 		RecoverMode:     *recover,
@@ -177,6 +193,9 @@ func main() {
 		SaveCheckpoints: *saveCheckpoints,
 		FullSync:        *fullSync,
 		SeedMode:        *seedMode,
+	}
+	if !*syncFromPeers {
+		cfg.SyncPeerIDs = nil
 	}
 
 	cli, err := NewCLI(cfg)
@@ -304,4 +323,29 @@ func detectPublicIP() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("all IP detection services failed")
+}
+
+func peerIDsFromMultiaddrs(addrs []string) ([]peer.ID, error) {
+	if len(addrs) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[peer.ID]struct{}, len(addrs))
+	out := make([]peer.ID, 0, len(addrs))
+	for _, addr := range addrs {
+		ma, err := multiaddr.NewMultiaddr(strings.TrimSpace(addr))
+		if err != nil {
+			return nil, err
+		}
+		info, err := peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[info.ID]; ok {
+			continue
+		}
+		seen[info.ID] = struct{}{}
+		out = append(out, info.ID)
+	}
+	return out, nil
 }

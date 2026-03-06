@@ -22,6 +22,7 @@ import (
 	"blocknet/protocol/params"
 	"blocknet/wallet"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/term"
 )
 
@@ -56,6 +57,7 @@ type CLIConfig struct {
 	DataDir         string
 	ListenAddrs     []string
 	SeedNodes       []string
+	SyncPeerIDs     []peer.ID
 	P2PMaxInbound   int // If >0, override default max inbound peers
 	P2PMaxOutbound  int // If >0, override default max outbound peers
 	SeedMode        bool
@@ -148,6 +150,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		DataDir:         cfg.DataDir,
 		ListenAddrs:     cfg.ListenAddrs,
 		SeedNodes:       cfg.SeedNodes,
+		SyncPeerIDs:     cfg.SyncPeerIDs,
 		P2PMaxInbound:   cfg.P2PMaxInbound,
 		P2PMaxOutbound:  cfg.P2PMaxOutbound,
 		SeedMode:        cfg.SeedMode,

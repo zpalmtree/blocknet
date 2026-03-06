@@ -95,6 +95,8 @@ type SyncManager struct {
 
 	node *Node
 
+	allowedSyncPeers map[peer.ID]struct{}
+
 	// Callbacks for chain operations
 	getStatus         func() ChainStatus
 	getHeaders        func(startHeight uint64, max int) ([][]byte, error)
@@ -115,8 +117,8 @@ type SyncManager struct {
 	syncing        bool
 	syncPeer       peer.ID
 	syncStartTime  time.Time
-	syncTarget     uint64            // Target height we're syncing to
-	syncProgress   uint64            // Current height we've processed to
+	syncTarget     uint64                     // Target height we're syncing to
+	syncProgress   uint64                     // Current height we've processed to
 	downloadBuffer map[uint64]DownloadedBlock // Buffer for out-of-order blocks
 
 	ctx    context.Context
@@ -149,6 +151,7 @@ type SyncConfig struct {
 	GetHeaders        func(startHeight uint64, max int) ([][]byte, error)
 	GetBlocks         func(hashes [][32]byte) ([][]byte, error)
 	GetBlocksByHeight func(startHeight uint64, max int) ([][]byte, error)
+	AllowedSyncPeers  []peer.ID
 	ProcessBlock      func(data []byte) error
 	ProcessHeader     func(data []byte) error
 	GetMempool        func() [][]byte                                              // Get all mempool transactions
@@ -163,8 +166,17 @@ type SyncConfig struct {
 
 // NewSyncManager creates a new sync manager
 func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
+	allowedSyncPeers := make(map[peer.ID]struct{}, len(cfg.AllowedSyncPeers))
+	for _, pid := range cfg.AllowedSyncPeers {
+		if pid == "" {
+			continue
+		}
+		allowedSyncPeers[pid] = struct{}{}
+	}
+
 	sm := &SyncManager{
 		node:              node,
+		allowedSyncPeers:  allowedSyncPeers,
 		getStatus:         cfg.GetStatus,
 		getHeaders:        cfg.GetHeaders,
 		getBlocks:         cfg.GetBlocks,
@@ -189,6 +201,40 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		sm.fetchBlocksByHash = sm.FetchBlocks
 	}
 	return sm
+}
+
+func (sm *SyncManager) syncPeerAllowed(pid peer.ID) bool {
+	if len(sm.allowedSyncPeers) == 0 {
+		return true
+	}
+	_, ok := sm.allowedSyncPeers[pid]
+	return ok
+}
+
+func (sm *SyncManager) filterAllowedPeers(peers []peer.ID) []peer.ID {
+	if len(sm.allowedSyncPeers) == 0 {
+		return peers
+	}
+	filtered := make([]peer.ID, 0, len(peers))
+	for _, pid := range peers {
+		if sm.syncPeerAllowed(pid) {
+			filtered = append(filtered, pid)
+		}
+	}
+	return filtered
+}
+
+func (sm *SyncManager) filterAllowedPeerStatuses(peers []PeerStatus) []PeerStatus {
+	if len(sm.allowedSyncPeers) == 0 {
+		return peers
+	}
+	filtered := make([]PeerStatus, 0, len(peers))
+	for _, ps := range peers {
+		if sm.syncPeerAllowed(ps.Peer) {
+			filtered = append(filtered, ps)
+		}
+	}
+	return filtered
 }
 
 // Start begins sync operations
@@ -496,7 +542,7 @@ func (sm *SyncManager) checkSync() {
 	}
 	sm.mu.RUnlock()
 
-	peers := sm.node.Peers()
+	peers := sm.filterAllowedPeers(sm.node.Peers())
 	if len(peers) == 0 {
 		return
 	}
@@ -624,6 +670,11 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 
 // parallelSyncFrom performs parallel chain sync from multiple peers
 func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64) {
+	peers = sm.filterAllowedPeerStatuses(peers)
+	if len(peers) == 0 {
+		return
+	}
+
 	sm.mu.Lock()
 	if sm.syncing {
 		sm.mu.Unlock()
@@ -655,7 +706,6 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	sm.mu.Lock()
 	sm.syncProgress = ourStatus.Height
 	sm.mu.Unlock()
-
 
 	// Use up to 3 peers for parallel download
 	numDownloaders := min(len(peers), 3)
@@ -807,7 +857,6 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 			nextHeight++
 
-			
 		}
 	}()
 

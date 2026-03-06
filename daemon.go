@@ -197,6 +197,7 @@ type DaemonConfig struct {
 	// P2P settings
 	ListenAddrs []string
 	SeedNodes   []string
+	SyncPeerIDs []peer.ID
 	// Optional P2P peer limits (0 uses p2p defaults)
 	P2PMaxInbound  int
 	P2PMaxOutbound int
@@ -412,6 +413,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		GetHeaders:        d.getHeaders,
 		GetBlocks:         d.getBlocks,
 		GetBlocksByHeight: d.getBlocksByHeight,
+		AllowedSyncPeers:  cfg.SyncPeerIDs,
 		ProcessBlock:      d.processBlockData,
 		ProcessHeader:     nil, // Full-block sync, no header processing
 		GetMempool:        d.getMempoolTxs,
