@@ -14,9 +14,35 @@ import (
 	"blocknet/p2p"
 	"blocknet/protocol/params"
 	"blocknet/wallet"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const Version = "0.7.0"
+
+type peerIDListFlag []string
+
+func (f *peerIDListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *peerIDListFlag) Set(value string) error {
+	for _, raw := range strings.Split(value, ",") {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			return fmt.Errorf("peer ID must not be empty")
+		}
+		parsed, err := peer.Decode(id)
+		if err != nil {
+			return fmt.Errorf("invalid peer ID %q: %w", id, err)
+		}
+		*f = append(*f, parsed.String())
+	}
+	return nil
+}
 
 func main() {
 	// Parse command line flags
@@ -37,6 +63,8 @@ func main() {
 	saveCheckpoints := flag.Bool("save-checkpoints", false, "Append a record to checkpoints.dat every 100 blocks (writes to data dir)")
 	fullSync := flag.Bool("full-sync", false, "Bypass checkpoints (download + verification) and sync naturally from peers")
 	outputPeerAddr := flag.Bool("output-peer-address", false, "Load identity key, resolve public IP, write peer.txt and exit")
+	var p2pWhitelistPeers peerIDListFlag
+	flag.Var(&p2pWhitelistPeers, "p2p-whitelist-peer", "Peer ID to exempt from peer bans (repeatable or comma-separated)")
 	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
 	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
 	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
@@ -166,6 +194,7 @@ func main() {
 		DataDir:         *dataDir,
 		ListenAddrs:     []string{*listen},
 		SeedNodes:       seedNodes,
+		P2PWhitelistPeers: []string(p2pWhitelistPeers),
 		P2PMaxInbound:   *p2pMaxInbound,
 		P2PMaxOutbound:  *p2pMaxOutbound,
 		RecoverMode:     *recover,
