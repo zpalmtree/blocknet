@@ -7,7 +7,7 @@ import (
 
 func TestIdempotencyCapNeverEvictsInFlight(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	c := newIdempotencyCache(10*time.Minute, 1)
+	c := newIdempotencyCache(10*time.Minute, 1, "")
 
 	var h1, h2 [32]byte
 	h1[0] = 1
@@ -48,7 +48,7 @@ func TestIdempotencyCapNeverEvictsInFlight(t *testing.T) {
 
 func TestIdempotencyPruneSkipsInFlight(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	c := newIdempotencyCache(1*time.Second, 100)
+	c := newIdempotencyCache(1*time.Second, 100, "")
 
 	var h [32]byte
 	h[0] = 9
@@ -66,3 +66,28 @@ func TestIdempotencyPruneSkipsInFlight(t *testing.T) {
 	}
 }
 
+func TestIdempotencyCachePersistsCompletedEntries(t *testing.T) {
+	now := time.Now()
+	path := t.TempDir() + "/send-idempotency.json"
+	c := newIdempotencyCache(24*time.Hour, 100, path)
+
+	var h [32]byte
+	h[0] = 7
+
+	state, _ := c.getOrStart(now, "k", h)
+	if state != "start" {
+		t.Fatalf("expected start, got %q", state)
+	}
+
+	body := []byte("{\"ok\":true}\n")
+	c.complete(now.Add(time.Second), "k", h, 200, body)
+
+	reloaded := newIdempotencyCache(24*time.Hour, 100, path)
+	state, res := reloaded.getOrStart(now.Add(2*time.Second), "k", h)
+	if state != "replay" {
+		t.Fatalf("expected replay after reload, got %q", state)
+	}
+	if res.status != 200 || string(res.body) != string(body) {
+		t.Fatalf("unexpected replay result: status=%d body=%q", res.status, string(res.body))
+	}
+}

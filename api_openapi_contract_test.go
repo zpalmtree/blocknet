@@ -33,6 +33,10 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create wallet: %v", err)
 	}
+	recipient, err := wallet.NewWallet(filepath.Join(t.TempDir(), "recipient.dat"), []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create recipient wallet: %v", err)
+	}
 
 	// Give the wallet one mature output so handleSend reaches memo validation
 	// before failing later in the expensive build path.
@@ -85,7 +89,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 
 	// Mutual exclusion: memo_text + memo_hex must fail.
 	{
-		body := []byte(`{"address":"` + w.Address() + `","amount":1,"memo_text":"hi","memo_hex":"00"}`)
+		body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_text":"hi","memo_hex":"00"}`)
 		rr := doReq("POST", "/api/wallet/send", body, authz, "198.51.100.10:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for memo mutual exclusion, got %d: %s", rr.Code, rr.Body.String())
@@ -97,7 +101,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 
 	// Hex validation: odd-length or non-hex memo_hex must fail.
 	{
-		body := []byte(`{"address":"` + w.Address() + `","amount":1,"memo_hex":"0"}`)
+		body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"0"}`)
 		rr := doReq("POST", "/api/wallet/send", body, authz, "198.51.100.11:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for invalid memo_hex, got %d: %s", rr.Code, rr.Body.String())
@@ -110,7 +114,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	// Length bound: memo payload must be <= 124 bytes.
 	{
 		long := strings.Repeat("a", wallet.MemoSize-3) // 125 bytes; over wallet limit (124)
-		body := []byte(`{"address":"` + w.Address() + `","amount":1,"memo_text":"` + long + `"}`)
+		body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_text":"` + long + `"}`)
 		rr := doReq("POST", "/api/wallet/send", body, authz, "198.51.100.12:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for too-long memo_text, got %d: %s", rr.Code, rr.Body.String())
