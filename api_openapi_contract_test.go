@@ -89,7 +89,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 
 	// Mutual exclusion: memo_text + memo_hex must fail.
 	{
-		body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_text":"hi","memo_hex":"00"}`)
+		body := []byte(`{"recipients":[{"address":"` + recipient.Address() + `","amount":1,"memo_text":"hi","memo_hex":"00"}]}`)
 		rr := doReq("POST", "/api/wallet/send", body, authz, "198.51.100.10:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for memo mutual exclusion, got %d: %s", rr.Code, rr.Body.String())
@@ -101,7 +101,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 
 	// Hex validation: odd-length or non-hex memo_hex must fail.
 	{
-		body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"0"}`)
+		body := []byte(`{"recipients":[{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"0"}]}`)
 		rr := doReq("POST", "/api/wallet/send", body, authz, "198.51.100.11:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for invalid memo_hex, got %d: %s", rr.Code, rr.Body.String())
@@ -114,7 +114,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	// Length bound: memo payload must be <= 124 bytes.
 	{
 		long := strings.Repeat("a", wallet.MemoSize-3) // 125 bytes; over wallet limit (124)
-		body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_text":"` + long + `"}`)
+		body := []byte(`{"recipients":[{"address":"` + recipient.Address() + `","amount":1,"memo_text":"` + long + `"}]}`)
 		rr := doReq("POST", "/api/wallet/send", body, authz, "198.51.100.12:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for too-long memo_text, got %d: %s", rr.Code, rr.Body.String())
@@ -174,41 +174,41 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 		t.Fatalf("failed to parse api_openapi.json: %v", err)
 	}
 
-	// Validate SendRequest has memo_text + memo_hex and does not mention payment_id.
+	// Validate SendRequest has recipients and SendRecipient has memo fields.
 	components := mustGetMap(t, spec, "components")
 	allSchemas := mustGetMap(t, components, "schemas")
 	sendReq := mustGetMap(t, allSchemas, "SendRequest")
-	props := mustGetMap(t, sendReq, "properties")
+	sendReqProps := mustGetMap(t, sendReq, "properties")
+
+	if _, ok := sendReqProps["recipients"]; !ok {
+		t.Fatal("SendRequest missing recipients in OpenAPI")
+	}
+
+	// Memo fields live in the shared SendRecipient schema.
+	recipientSchema := mustGetMap(t, allSchemas, "SendRecipient")
+	props := mustGetMap(t, recipientSchema, "properties")
 
 	if _, ok := props["memo_text"]; !ok {
-		t.Fatal("SendRequest missing memo_text in OpenAPI")
+		t.Fatal("SendRecipient missing memo_text in OpenAPI")
 	}
 	if _, ok := props["memo_hex"]; !ok {
-		t.Fatal("SendRequest missing memo_hex in OpenAPI")
+		t.Fatal("SendRecipient missing memo_hex in OpenAPI")
 	}
 	if _, ok := props["payment_id"]; ok {
-		t.Fatal("SendRequest unexpectedly includes legacy payment_id in OpenAPI")
-	}
-	if _, ok := props["memo"]; ok {
-		t.Fatal("SendRequest unexpectedly includes memo (single-field) in OpenAPI")
-	}
-
-	// Ensure the mutual-exclusion invariant is machine-expressed.
-	if _, ok := sendReq["oneOf"]; !ok {
-		t.Fatal("SendRequest missing oneOf mutual-exclusion constraint in OpenAPI")
+		t.Fatal("SendRecipient unexpectedly includes legacy payment_id in OpenAPI")
 	}
 
 	// Ensure schema encodes the same bounds we enforce in handlers.
 	memoText := mustGetMap(t, props, "memo_text")
 	if got, ok := memoText["maxLength"].(float64); !ok || int(got) != 124 {
-		t.Fatalf("SendRequest.memo_text maxLength mismatch: got %#v want 124", memoText["maxLength"])
+		t.Fatalf("SendRecipient.memo_text maxLength mismatch: got %#v want 124", memoText["maxLength"])
 	}
 	memoHex := mustGetMap(t, props, "memo_hex")
 	if got, ok := memoHex["maxLength"].(float64); !ok || int(got) != 248 {
-		t.Fatalf("SendRequest.memo_hex maxLength mismatch: got %#v want 248", memoHex["maxLength"])
+		t.Fatalf("SendRecipient.memo_hex maxLength mismatch: got %#v want 248", memoHex["maxLength"])
 	}
 	if pat, ok := memoHex["pattern"].(string); !ok || !strings.Contains(pat, "{2}") {
-		t.Fatalf("SendRequest.memo_hex pattern missing even-length constraint: got %#v", memoHex["pattern"])
+		t.Fatalf("SendRecipient.memo_hex pattern missing even-length constraint: got %#v", memoHex["pattern"])
 	}
 
 	// Ensure `/api/wallet/send` documents idempotency header support.
@@ -309,7 +309,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 
 	// Missing inputs array must fail.
 	{
-		body := []byte(`{"address":"` + recipientAddr + `","amount":1}`)
+		body := []byte(`{"recipients":[{"address":"` + recipientAddr + `","amount":1}]}`)
 		rr := doReq(body, "198.51.100.20:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for missing inputs, got %d: %s", rr.Code, rr.Body.String())
@@ -321,7 +321,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 
 	// Empty inputs array must fail.
 	{
-		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"inputs":[]}`)
+		body := []byte(`{"recipients":[{"address":"` + recipientAddr + `","amount":1}],"inputs":[]}`)
 		rr := doReq(body, "198.51.100.21:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for empty inputs, got %d: %s", rr.Code, rr.Body.String())
@@ -333,7 +333,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 
 	// Bad txid length must fail.
 	{
-		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"inputs":[{"txid":"abcd","output_index":0}]}`)
+		body := []byte(`{"recipients":[{"address":"` + recipientAddr + `","amount":1}],"inputs":[{"txid":"abcd","output_index":0}]}`)
 		rr := doReq(body, "198.51.100.22:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for bad txid, got %d: %s", rr.Code, rr.Body.String())
@@ -345,7 +345,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 
 	// Memo mutual exclusion must fail.
 	{
-		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"memo_text":"hi","memo_hex":"00","inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
+		body := []byte(`{"recipients":[{"address":"` + recipientAddr + `","amount":1,"memo_text":"hi","memo_hex":"00"}],"inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
 		rr := doReq(body, "198.51.100.23:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for memo mutual exclusion, got %d: %s", rr.Code, rr.Body.String())
@@ -358,7 +358,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 	// Memo too long must fail.
 	{
 		long := strings.Repeat("a", wallet.MemoSize-3)
-		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"memo_text":"` + long + `","inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
+		body := []byte(`{"recipients":[{"address":"` + recipientAddr + `","amount":1,"memo_text":"` + long + `"}],"inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
 		rr := doReq(body, "198.51.100.24:1234")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for memo too long, got %d: %s", rr.Code, rr.Body.String())
@@ -370,7 +370,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 
 	// Dry run with valid inputs must return 200 with fee/change/input_total.
 	{
-		body := []byte(`{"address":"` + recipientAddr + `","amount":1000,"dry_run":true,"inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
+		body := []byte(`{"recipients":[{"address":"` + recipientAddr + `","amount":1000}],"dry_run":true,"inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
 		rr := doReq(body, "198.51.100.25:1234")
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200 for dry run, got %d: %s", rr.Code, rr.Body.String())
@@ -382,7 +382,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 		if dryRun, ok := got["dry_run"].(bool); !ok || !dryRun {
 			t.Fatalf("expected dry_run=true, got %#v", got["dry_run"])
 		}
-		for _, required := range []string{"fee", "change", "input_total", "input_count"} {
+		for _, required := range []string{"fee", "change", "input_total", "input_count", "recipients"} {
 			if _, ok := got[required]; !ok {
 				t.Fatalf("dry run response missing %q", required)
 			}
@@ -412,30 +412,10 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 	advReq := mustGetMap(t, allSchemas, "SendAdvancedRequest")
 	advProps := mustGetMap(t, advReq, "properties")
 
-	for _, field := range []string{"address", "amount", "inputs", "memo_text", "memo_hex", "dry_run"} {
+	for _, field := range []string{"recipients", "inputs", "dry_run", "change_split"} {
 		if _, ok := advProps[field]; !ok {
 			t.Fatalf("SendAdvancedRequest missing %q in OpenAPI", field)
 		}
-	}
-
-	// oneOf memo exclusivity constraint must be present.
-	if _, ok := advReq["oneOf"]; !ok {
-		t.Fatal("SendAdvancedRequest missing oneOf mutual-exclusion constraint in OpenAPI")
-	}
-
-	// memo_text maxLength must match handler limit.
-	memoText := mustGetMap(t, advProps, "memo_text")
-	if got, ok := memoText["maxLength"].(float64); !ok || int(got) != 124 {
-		t.Fatalf("SendAdvancedRequest.memo_text maxLength mismatch: got %#v want 124", memoText["maxLength"])
-	}
-
-	// memo_hex must have pattern and maxLength.
-	memoHex := mustGetMap(t, advProps, "memo_hex")
-	if got, ok := memoHex["maxLength"].(float64); !ok || int(got) != 248 {
-		t.Fatalf("SendAdvancedRequest.memo_hex maxLength mismatch: got %#v want 248", memoHex["maxLength"])
-	}
-	if pat, ok := memoHex["pattern"].(string); !ok || !strings.Contains(pat, "{2}") {
-		t.Fatalf("SendAdvancedRequest.memo_hex pattern missing even-length constraint: got %#v", memoHex["pattern"])
 	}
 
 	// inputs must have minItems and maxItems.
@@ -447,23 +427,23 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 		t.Fatalf("inputs.maxItems mismatch: got %#v want 256", inputsProp["maxItems"])
 	}
 
+	// change_split must have minimum and maximum.
+	changeSplitProp := mustGetMap(t, advProps, "change_split")
+	if got, ok := changeSplitProp["minimum"].(float64); !ok || int(got) != 1 {
+		t.Fatalf("change_split.minimum mismatch: got %#v want 1", changeSplitProp["minimum"])
+	}
+	if got, ok := changeSplitProp["maximum"].(float64); !ok || int(got) != 4 {
+		t.Fatalf("change_split.maximum mismatch: got %#v want 4", changeSplitProp["maximum"])
+	}
+
 	// --- SendAdvancedResponse schema ---
 	advResp := mustGetMap(t, allSchemas, "SendAdvancedResponse")
 	respProps := mustGetMap(t, advResp, "properties")
 
-	for _, field := range []string{"txid", "fee", "change", "input_total", "input_count", "dry_run", "memo_hex"} {
+	for _, field := range []string{"txid", "fee", "change", "change_split", "input_total", "input_count", "dry_run", "recipients"} {
 		if _, ok := respProps[field]; !ok {
 			t.Fatalf("SendAdvancedResponse missing %q in OpenAPI", field)
 		}
-	}
-
-	// Response memo_hex must have pattern and maxLength (match SendResponse).
-	respMemoHex := mustGetMap(t, respProps, "memo_hex")
-	if got, ok := respMemoHex["maxLength"].(float64); !ok || int(got) != 248 {
-		t.Fatalf("SendAdvancedResponse.memo_hex maxLength mismatch: got %#v want 248", respMemoHex["maxLength"])
-	}
-	if pat, ok := respMemoHex["pattern"].(string); !ok || !strings.Contains(pat, "{2}") {
-		t.Fatalf("SendAdvancedResponse.memo_hex pattern missing even-length constraint: got %#v", respMemoHex["pattern"])
 	}
 
 	// --- Endpoint path ---

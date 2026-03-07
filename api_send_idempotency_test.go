@@ -215,8 +215,8 @@ func TestHandleSendIdempotencyKeyReplayAndMismatch(t *testing.T) {
 		return rr
 	}
 
-	body1 := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"0"}`) // invalid hex -> 400
-	body2 := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"00"}`)
+	body1 := []byte(`{"recipients":[{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"0"}]}`) // invalid hex -> 400
+	body2 := []byte(`{"recipients":[{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"00"}]}`)
 
 	// First request stores deterministic result for key-1.
 	r1 := doReq(body1, "key-1")
@@ -308,7 +308,7 @@ func TestHandleSendIdempotencySuccessfulReplayPersistsAcrossRestart(t *testing.T
 		return rr
 	}
 
-	body := []byte(`{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"00"}`)
+	body := []byte(`{"recipients":[{"address":"` + recipient.Address() + `","amount":1,"memo_hex":"00"}]}`)
 	firstHandler := newHandler(sender)
 	r1 := doReq(firstHandler, body, "key-success")
 	if r1.Code != http.StatusOK {
@@ -367,7 +367,7 @@ func TestHandleSendInsufficientFundsAfterFeeAdjustmentIsBadRequest(t *testing.T)
 	req := httptest.NewRequest(
 		"POST",
 		"/api/wallet/send",
-		bytes.NewReader([]byte(`{"address":"`+recipient.Address()+`","amount":10000000}`)),
+		bytes.NewReader([]byte(`{"recipients":[{"address":"`+recipient.Address()+`","amount":10000000}]}`)),
 	)
 	req.RemoteAddr = "198.51.100.40:1234"
 	req.Header.Set("Authorization", "Bearer "+token)

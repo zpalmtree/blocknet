@@ -195,13 +195,14 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		fee = requiredFee
 	}
 
-	return b.buildTransaction(inputs, recipients, totalSend, fee, lease)
+	return b.buildTransaction(inputs, recipients, totalSend, fee, lease, 1)
 }
 
 // TransferWithInputs builds a transaction using caller-specified inputs (coin control).
 // The inputs must already be reserved via ReserveSpecificInputs; the lease is released
-// on build failure.
-func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipients []Recipient, feeRate uint64) (res *TransferResult, retErr error) {
+// on build failure. changeSplit controls how many outputs the change is distributed
+// across (1-4, clamped internally).
+func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipients []Recipient, feeRate uint64, changeSplit int) (res *TransferResult, retErr error) {
 	defer func() {
 		if retErr != nil && lease != 0 {
 			b.wallet.ReleaseInputLease(lease)
@@ -224,20 +225,25 @@ func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipi
 		}
 	}
 
-	// With fixed inputs the fee is computed once (no iteration). Assume a
-	// change output for a conservative size estimate; if change ends up zero
+	if changeSplit < 1 {
+		changeSplit = 1
+	}
+
+	// With fixed inputs the fee is computed once (no iteration). Use
+	// changeSplit for conservative size estimate; if change ends up zero
 	// the slightly higher fee is simply absorbed.
-	outputCount := len(recipients) + 1
+	outputCount := len(recipients) + changeSplit
 	estimatedSize := estimateTxSizeBytes(len(inputs), outputCount, b.config.RingSize)
 	fee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
 
-	return b.buildTransaction(inputs, recipients, totalSend, fee, lease)
+	return b.buildTransaction(inputs, recipients, totalSend, fee, lease, changeSplit)
 }
 
 // buildTransaction is the shared core that constructs outputs, ring signatures,
 // and serializes the transaction. Both Transfer and TransferWithInputs delegate here
-// after input selection and fee computation.
-func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient, totalSend, fee, lease uint64) (*TransferResult, error) {
+// after input selection and fee computation. changeSplit controls how many outputs
+// the change is distributed across (clamped to min(changeSplit, change) and >= 1).
+func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient, totalSend, fee, lease uint64, changeSplit int) (*TransferResult, error) {
 	var totalInput uint64
 	for _, inp := range inputs {
 		var ok bool
@@ -255,7 +261,11 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 	}
 	change := totalInput - totalSend - fee
 
-	outputs := make([]outputData, 0, len(recipients)+1)
+	if changeSplit < 1 {
+		changeSplit = 1
+	}
+
+	outputs := make([]outputData, 0, len(recipients)+changeSplit)
 
 	txPrivKey, txPubKey, firstOneTimePub, err := b.deriveDeterministicTxKey(
 		inputs, recipients[0].SpendPubKey, recipients[0].ViewPubKey,
@@ -313,45 +323,58 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 
 	if change > 0 {
 		keys := b.wallet.Keys()
-		outputIndex := len(outputs)
-
-		changeSecret, err := b.config.DeriveSharedSecret(txPrivKey, keys.ViewPubKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive shared secret for change: %w", err)
+		n := changeSplit
+		if uint64(n) > change {
+			n = int(change)
 		}
+		perOutput := change / uint64(n)
+		remainder := change % uint64(n)
 
-		sharedPoint, err := b.config.ScalarToPoint(changeSecret)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive shared point for change: %w", err)
-		}
-		oneTimePub, err := b.config.PointAdd(sharedPoint, keys.SpendPubKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive one-time key for change: %w", err)
-		}
+		for c := 0; c < n; c++ {
+			outputIndex := len(outputs)
+			amt := perOutput
+			if c == 0 {
+				amt += remainder
+			}
 
-		blinding := DeriveBlinding(changeSecret, outputIndex)
-		commitment := b.config.CreateCommitment(change, blinding)
-		rangeProof, err := b.config.CreateRangeProof(change, blinding)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create change range proof: %w", err)
-		}
+			changeSecret, err := b.config.DeriveSharedSecret(txPrivKey, keys.ViewPubKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive shared secret for change output %d: %w", c, err)
+			}
 
-		encryptedAmount := encryptAmount(change, blinding, outputIndex)
-		encryptedMemo, err := EncryptMemo(nil, changeSecret, outputIndex)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt memo for change output: %w", err)
-		}
+			sharedPoint, err := b.config.ScalarToPoint(changeSecret)
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive shared point for change output %d: %w", c, err)
+			}
+			oneTimePub, err := b.config.PointAdd(sharedPoint, keys.SpendPubKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive one-time key for change output %d: %w", c, err)
+			}
 
-		outputs = append(outputs, outputData{
-			pubKey:          oneTimePub,
-			commitment:      commitment,
-			rangeProof:      rangeProof,
-			encryptedAmount: encryptedAmount,
-			encryptedMemo:   encryptedMemo,
-			blinding:        blinding,
-			amount:          change,
-		})
-		allBlindings = append(allBlindings, blinding)
+			blinding := DeriveBlinding(changeSecret, outputIndex)
+			commitment := b.config.CreateCommitment(amt, blinding)
+			rangeProof, err := b.config.CreateRangeProof(amt, blinding)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create range proof for change output %d: %w", c, err)
+			}
+
+			encryptedAmount := encryptAmount(amt, blinding, outputIndex)
+			encryptedMemo, err := EncryptMemo(nil, changeSecret, outputIndex)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt memo for change output %d: %w", c, err)
+			}
+
+			outputs = append(outputs, outputData{
+				pubKey:          oneTimePub,
+				commitment:      commitment,
+				rangeProof:      rangeProof,
+				encryptedAmount: encryptedAmount,
+				encryptedMemo:   encryptedMemo,
+				blinding:        blinding,
+				amount:          amt,
+			})
+			allBlindings = append(allBlindings, blinding)
+		}
 	}
 
 	totalOutputBlinding, err := b.sumBlindings(allBlindings)

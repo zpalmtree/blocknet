@@ -214,13 +214,15 @@ func (c *CLI) cmdSend(args []string) error {
 
 	// Record send for history tracking
 	c.wallet.RecordSend(&wallet.SendRecord{
-		TxID:        result.TxID,
-		Timestamp:   time.Now().Unix(),
-		Recipient:   recipientLabel,
-		Amount:      amount,
+		TxID:      result.TxID,
+		Timestamp: time.Now().Unix(),
+		Recipients: []wallet.SendRecipient{{
+			Address: recipientLabel,
+			Amount:  amount,
+			Memo:    memo,
+		}},
 		Fee:         result.Fee,
 		BlockHeight: c.daemon.Chain().Height(),
-		Memo:        memo,
 	})
 	if result.Change > 0 {
 		// UX: surface expected change immediately until it is confirmed/scanned.
@@ -399,14 +401,20 @@ func (c *CLI) cmdHistory() {
 			color = dim
 		}
 
+		var firstMemo []byte
+		recipients := sendRecord.GetRecipients()
+		if len(recipients) > 0 {
+			firstMemo = recipients[0].Memo
+		}
+
 		events = append(events, historyEvent{
 			timestamp: ts,
 			direction: "OUT",
-			amount:    sendRecord.Amount,
+			amount:    sendRecord.TotalAmount(),
 			height:    sendRecord.BlockHeight,
 			color:     color,
 			txHash:    sendRecord.TxID,
-			memo:      sendRecord.Memo,
+			memo:      firstMemo,
 			pending:   pending,
 		})
 		seenTxIDs[sendRecord.TxID] = true

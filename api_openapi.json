@@ -948,7 +948,7 @@
         "operationId": "sendFunds",
         "tags": ["Wallet"],
         "summary": "Send funds",
-        "description": "Builds a privacy-preserving transaction using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_fee, fee_per_byte * tx_size). Requires unlocked full wallet (not view-only).",
+        "description": "Builds a privacy-preserving transaction with one or more recipients using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_fee, fee_per_byte * tx_size). Note: multi-recipient transactions link all recipients within the same transaction from a graph-analysis perspective. Requires unlocked full wallet (not view-only).",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -966,8 +966,12 @@
                 "$ref": "#/components/schemas/SendRequest"
               },
               "example": {
-                "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-                "amount": 500000000
+                "recipients": [
+                  {
+                    "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                    "amount": 500000000
+                  }
+                ]
               }
             }
           }
@@ -983,7 +987,13 @@
                 "example": {
                   "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
                   "fee": 15000,
-                  "change": 734850000
+                  "change": 734850000,
+                  "recipients": [
+                    {
+                      "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                      "amount": 500000000
+                    }
+                  ]
                 }
               }
             }
@@ -1045,7 +1055,7 @@
         "operationId": "sendFundsAdvanced",
         "tags": ["Wallet"],
         "summary": "Send funds with coin control",
-        "description": "Builds a transaction using caller-specified inputs (coin control). The caller selects which outputs to spend by referencing txid + output_index pairs from GET /api/wallet/outputs. No automatic input selection is performed. Supports dry_run mode to preview fee and change before broadcasting. Same fee calculation, ring signatures, and Dandelion++ broadcast as the standard send endpoint.",
+        "description": "Builds a transaction with one or more recipients using caller-specified inputs (coin control). The caller selects which outputs to spend by referencing txid + output_index pairs from GET /api/wallet/outputs. No automatic input selection is performed. Supports dry_run mode to preview fee and change before broadcasting. Optional change_split (1-4) distributes change across multiple outputs for improved back-to-back send concurrency at the cost of reduced privacy. Same fee calculation, ring signatures, and Dandelion++ broadcast as the standard send endpoint.",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -1066,19 +1076,42 @@
                 "send": {
                   "summary": "Send using specific inputs",
                   "value": {
-                    "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-                    "amount": 500000000,
+                    "recipients": [
+                      {
+                        "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                        "amount": 500000000
+                      }
+                    ],
                     "inputs": [
                       { "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4", "output_index": 0 },
                       { "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2", "output_index": 1 }
                     ]
                   }
                 },
+                "change_split": {
+                  "summary": "Send with change split for concurrency",
+                  "value": {
+                    "recipients": [
+                      {
+                        "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                        "amount": 500000000
+                      }
+                    ],
+                    "change_split": 4,
+                    "inputs": [
+                      { "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4", "output_index": 0 }
+                    ]
+                  }
+                },
                 "dry_run": {
                   "summary": "Preview fee and change without broadcasting",
                   "value": {
-                    "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-                    "amount": 500000000,
+                    "recipients": [
+                      {
+                        "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                        "amount": 500000000
+                      }
+                    ],
                     "dry_run": true,
                     "inputs": [
                       { "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4", "output_index": 0 }
@@ -1104,9 +1137,16 @@
                       "txid": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
                       "fee": 15000,
                       "change": 234850000,
+                      "change_split": 1,
                       "input_total": 735000000,
                       "input_count": 2,
-                      "dry_run": false
+                      "dry_run": false,
+                      "recipients": [
+                        {
+                          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                          "amount": 500000000
+                        }
+                      ]
                     }
                   },
                   "dry_run": {
@@ -1114,9 +1154,16 @@
                     "value": {
                       "fee": 15000,
                       "change": 234850000,
+                      "change_split": 1,
                       "input_total": 735000000,
                       "input_count": 1,
-                      "dry_run": true
+                      "dry_run": true,
+                      "recipients": [
+                        {
+                          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                          "amount": 500000000
+                        }
+                      ]
                     }
                   }
                 }
@@ -2350,52 +2397,62 @@
           "signature": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
         }
       },
-      "SendRequest": {
+      "SendRecipient": {
         "type": "object",
         "required": ["address", "amount"],
         "properties": {
           "address": {
             "type": "string",
-            "description": "Recipient stealth address (base58-encoded spend_pub || view_pub)"
+            "description": "Recipient stealth address (base58-encoded spend_pub || view_pub) or Blocknet ID handle"
           },
           "amount": {
             "type": "integer",
             "minimum": 1,
-            "description": "Amount in atomic units (1 BNT = 100,000,000). Must not exceed spendable balance."
+            "description": "Amount in atomic units (1 BNT = 100,000,000)"
           },
           "memo_text": {
             "type": "string",
             "maxLength": 124,
-            "description": "Optional UTF-8 memo text. Mutually exclusive with memo_hex. Server enforces max 124 BYTES after UTF-8 encoding; maxLength here is best-effort (character count)."
+            "description": "Optional UTF-8 memo text. Mutually exclusive with memo_hex. Server enforces max 124 BYTES after UTF-8 encoding."
           },
           "memo_hex": {
             "type": "string",
             "pattern": "^(?:[A-Fa-f0-9]{2})*$",
             "maxLength": 248,
-            "description": "Optional memo payload in hex. Mutually exclusive with memo_text. Max 248 hex chars (124 bytes). Pattern enforces even-length hex."
+            "description": "Optional memo payload in hex. Mutually exclusive with memo_text. Max 248 hex chars (124 bytes)."
+          }
+        }
+      },
+      "SendRecipientResult": {
+        "type": "object",
+        "properties": {
+          "address": { "type": "string", "description": "Address as provided in the request" },
+          "amount": { "type": "integer", "description": "Amount sent in atomic units" },
+          "memo_hex": { "type": "string", "description": "Hex-encoded memo (if provided)" },
+          "resolved_handle": { "type": "string", "description": "Handle that was resolved (if address was a Blocknet ID)" },
+          "resolved_address": { "type": "string", "description": "Address the handle resolved to" },
+          "resolver_verified": { "type": "boolean", "description": "Whether the handle is verified" }
+        }
+      },
+      "SendRequest": {
+        "type": "object",
+        "required": ["recipients"],
+        "properties": {
+          "recipients": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/SendRecipient" },
+            "description": "One or more recipients. Total amount must not exceed spendable balance."
           }
         },
-        "oneOf": [
-          {
-            "required": ["address", "amount"],
-            "description": "No memo provided",
-            "not": { "anyOf": [{ "required": ["memo_text"] }, { "required": ["memo_hex"] }] }
-          },
-          {
-            "required": ["address", "amount", "memo_text"],
-            "description": "Memo provided as UTF-8 text",
-            "not": { "required": ["memo_hex"] }
-          },
-          {
-            "required": ["address", "amount", "memo_hex"],
-            "description": "Memo provided as hex bytes",
-            "not": { "required": ["memo_text"] }
-          }
-        ],
         "example": {
-          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-          "amount": 500000000,
-          "memo_text": "invoice #8421"
+          "recipients": [
+            {
+              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "amount": 500000000,
+              "memo_text": "invoice #8421"
+            }
+          ]
         }
       },
       "SendResponse": {
@@ -2404,32 +2461,34 @@
           "txid": { "type": "string", "description": "Transaction hash (64 hex chars)" },
           "fee": { "type": "integer", "description": "Fee paid in atomic units" },
           "change": { "type": "integer", "description": "Change returned to wallet in atomic units" },
-          "memo_hex": {
-            "type": "string",
-            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
-            "maxLength": 248,
-            "description": "Hex-encoded memo payload (present only if one was provided in the request). Max 248 hex chars (124 bytes)."
+          "recipients": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SendRecipientResult" },
+            "description": "Per-recipient results including any handle resolution info and memos"
           }
         },
         "example": {
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
           "fee": 15000,
           "change": 734850000,
-          "memo_hex": "696e766f696365202338343231"
+          "recipients": [
+            {
+              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "amount": 500000000,
+              "memo_hex": "696e766f696365202338343231"
+            }
+          ]
         }
       },
       "SendAdvancedRequest": {
         "type": "object",
-        "required": ["address", "amount", "inputs"],
+        "required": ["recipients", "inputs"],
         "properties": {
-          "address": {
-            "type": "string",
-            "description": "Recipient stealth address (base58-encoded spend_pub || view_pub)"
-          },
-          "amount": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Amount in atomic units (1 BNT = 100,000,000). The sum of specified inputs must cover this amount plus the computed fee."
+          "recipients": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/SendRecipient" },
+            "description": "One or more recipients. The sum of specified inputs must cover total amount plus the computed fee."
           },
           "inputs": {
             "type": "array",
@@ -2453,43 +2512,26 @@
             },
             "description": "Specific outputs to use as transaction inputs. No automatic selection is performed. Each output must be unspent, mature, unreserved, and not have its key image in the mempool."
           },
-          "memo_text": {
-            "type": "string",
-            "maxLength": 124,
-            "description": "Optional UTF-8 memo text. Mutually exclusive with memo_hex. Server enforces max 124 BYTES after UTF-8 encoding; maxLength here is best-effort (character count)."
-          },
-          "memo_hex": {
-            "type": "string",
-            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
-            "maxLength": 248,
-            "description": "Optional memo payload in hex. Mutually exclusive with memo_text. Max 248 hex chars (124 bytes). Pattern enforces even-length hex."
-          },
           "dry_run": {
             "type": "boolean",
             "default": false,
             "description": "If true, validate inputs and compute fee/change without building or broadcasting the transaction. The reserved inputs are released immediately."
+          },
+          "change_split": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "default": 1,
+            "description": "Number of change outputs to create (1-4). Higher values improve back-to-back send concurrency at the cost of reduced privacy (deviates from the standard 2-output transaction fingerprint). Actual split count is clamped to min(change_split, change_amount_in_atomic_units)."
           }
         },
-        "oneOf": [
-          {
-            "required": ["address", "amount", "inputs"],
-            "description": "No memo provided",
-            "not": { "anyOf": [{ "required": ["memo_text"] }, { "required": ["memo_hex"] }] }
-          },
-          {
-            "required": ["address", "amount", "inputs", "memo_text"],
-            "description": "Memo provided as UTF-8 text",
-            "not": { "required": ["memo_hex"] }
-          },
-          {
-            "required": ["address", "amount", "inputs", "memo_hex"],
-            "description": "Memo provided as hex bytes",
-            "not": { "required": ["memo_text"] }
-          }
-        ],
         "example": {
-          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-          "amount": 500000000,
+          "recipients": [
+            {
+              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "amount": 500000000
+            }
+          ],
           "inputs": [
             { "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4", "output_index": 0 }
           ]
@@ -2510,6 +2552,10 @@
             "type": "integer",
             "description": "Change returned to wallet in atomic units"
           },
+          "change_split": {
+            "type": "integer",
+            "description": "Number of change outputs created"
+          },
           "input_total": {
             "type": "integer",
             "description": "Sum of all specified input amounts in atomic units"
@@ -2522,20 +2568,26 @@
             "type": "boolean",
             "description": "True if this was a dry-run preview (no transaction was broadcast)"
           },
-          "memo_hex": {
-            "type": "string",
-            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
-            "maxLength": 248,
-            "description": "Hex-encoded memo payload (present only if one was provided in the request). Max 248 hex chars (124 bytes)."
+          "recipients": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SendRecipientResult" },
+            "description": "Per-recipient results including any handle resolution info and memos"
           }
         },
         "example": {
           "txid": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
           "fee": 15000,
           "change": 234850000,
+          "change_split": 1,
           "input_total": 735000000,
           "input_count": 2,
-          "dry_run": false
+          "dry_run": false,
+          "recipients": [
+            {
+              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "amount": 500000000
+            }
+          ]
         }
       },
       "BlockTemplate": {

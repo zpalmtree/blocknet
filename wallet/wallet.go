@@ -271,15 +271,53 @@ type OwnedOutput struct {
 	Memo           []byte   `json:"memo,omitempty"` // Decrypted memo payload
 }
 
-// SendRecord tracks outgoing transaction details
+// SendRecipient stores per-recipient details in a send record.
+type SendRecipient struct {
+	Address string `json:"address"`
+	Amount  uint64 `json:"amount"`
+	Memo    []byte `json:"memo,omitempty"`
+}
+
+// SendRecord tracks outgoing transaction details.
+// Legacy wallets may have Recipient/Amount/Memo populated instead of
+// Recipients; call GetRecipients() to handle both.
 type SendRecord struct {
 	TxID        [32]byte `json:"txid"`
 	Timestamp   int64    `json:"timestamp"`
-	Recipient   string   `json:"recipient"` // base58 address
-	Amount      uint64   `json:"amount"`    // actual amount sent (not including fee)
 	Fee         uint64   `json:"fee"`
-	BlockHeight uint64   `json:"block_height"`   // when confirmed
-	Memo        []byte   `json:"memo,omitempty"` // Memo used (plaintext)
+	BlockHeight uint64   `json:"block_height"`
+
+	// Multi-recipient (current format).
+	Recipients []SendRecipient `json:"recipients,omitempty"`
+
+	// Legacy single-recipient fields — kept for backward-compat deserialization.
+	Recipient string `json:"recipient,omitempty"`
+	Amount    uint64 `json:"amount,omitempty"`
+	Memo      []byte `json:"memo,omitempty"`
+}
+
+// GetRecipients returns the recipients list, synthesizing from legacy fields
+// if the wallet file predates multi-recipient support.
+func (r *SendRecord) GetRecipients() []SendRecipient {
+	if len(r.Recipients) > 0 {
+		return r.Recipients
+	}
+	if r.Recipient != "" || r.Amount > 0 {
+		return []SendRecipient{{Address: r.Recipient, Amount: r.Amount, Memo: r.Memo}}
+	}
+	return nil
+}
+
+// TotalAmount returns the sum of all recipient amounts.
+func (r *SendRecord) TotalAmount() uint64 {
+	if len(r.Recipients) > 0 {
+		var total uint64
+		for _, rr := range r.Recipients {
+			total += rr.Amount
+		}
+		return total
+	}
+	return r.Amount
 }
 
 // WalletData is the serializable wallet state
