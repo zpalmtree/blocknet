@@ -21,6 +21,11 @@ import (
 	"blocknet/wallet"
 )
 
+const (
+	sendMinFee     = uint64(1000) // 0.00001 BNT minimum fee
+	sendFeePerByte = uint64(10)   // 0.0000001 BNT per byte
+)
+
 // ============================================================================
 // Public handlers (no wallet needed)
 // ============================================================================
@@ -627,7 +632,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	recipient.Memo = memo
 
 	builder := s.createTxBuilder()
-	result, err := builder.Transfer([]wallet.Recipient{recipient}, 10, height)
+	result, err := builder.Transfer([]wallet.Recipient{recipient}, sendFeePerByte, height)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
@@ -667,6 +672,284 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		"txid":   fmt.Sprintf("%x", result.TxID),
 		"fee":    result.Fee,
 		"change": result.Change,
+	}
+	if resolvedInfo != nil {
+		resp["resolved_handle"] = resolvedInfo.Handle
+		resp["resolved_address"] = resolvedAddr
+		resp["resolver_verified"] = resolvedInfo.Verified
+	}
+	if len(memo) > 0 {
+		resp["memo_hex"] = hex.EncodeToString(memo)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleSendAdvanced builds a transaction using caller-specified inputs (coin control).
+// POST /api/wallet/send/advanced
+func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+	if s.wallet.IsViewOnly() {
+		writeError(w, http.StatusForbidden, "view-only wallet cannot send")
+		return
+	}
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	var reqHash [32]byte
+	if idemKey != "" {
+		if len(idemKey) > 128 {
+			writeError(w, http.StatusBadRequest, "idempotency key too long")
+			return
+		}
+		reqHash = hashRequestBody(bodyBytes)
+		cacheKey := "send-advanced:" + idemKey
+		state, res := s.sendIdem.getOrStart(time.Now(), cacheKey, reqHash)
+		switch state {
+		case "replay":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(res.status)
+			_, _ = w.Write(res.body)
+			return
+		case "mismatch":
+			writeError(w, http.StatusConflict, "idempotency key reuse with different request")
+			return
+		case "inflight":
+			writeError(w, http.StatusConflict, "idempotency key in progress")
+			return
+		case "start":
+		default:
+			writeError(w, http.StatusInternalServerError, "idempotency state error")
+			return
+		}
+
+		cw := newCapturingResponseWriter(w)
+		w = cw
+		defer func() {
+			if cw.status == http.StatusTooManyRequests {
+				s.sendIdem.abandon(cacheKey)
+				return
+			}
+			if cw.wroteAny {
+				s.sendIdem.complete(time.Now(), cacheKey, reqHash, cw.status, cw.buf.Bytes())
+			} else {
+				s.sendIdem.abandon(cacheKey)
+			}
+		}()
+	}
+
+	ip := clientIP(r)
+	if !s.sendLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "send rate limit exceeded")
+		return
+	}
+
+	select {
+	case s.sendSem <- struct{}{}:
+		defer func() { <-s.sendSem }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "send busy, retry later")
+		return
+	}
+
+	var req struct {
+		Address  string `json:"address"`
+		Amount   uint64 `json:"amount"`
+		MemoText string `json:"memo_text"`
+		MemoHex  string `json:"memo_hex"`
+		DryRun   bool   `json:"dry_run"`
+		Inputs   []struct {
+			TxID        string `json:"txid"`
+			OutputIndex int    `json:"output_index"`
+		} `json:"inputs"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if len(req.Inputs) == 0 {
+		writeError(w, http.StatusBadRequest, "inputs array is required for coin control")
+		return
+	}
+	if len(req.Inputs) > 256 {
+		writeError(w, http.StatusBadRequest, "too many inputs (max 256)")
+		return
+	}
+
+	recipientInput := sanitizeInput(req.Address)
+	resolvedAddr, resolvedInfo, err := resolveRecipientAddress(recipientInput)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid recipient: %v", err))
+		return
+	}
+
+	spendPub, viewPub, err := wallet.ParseAddress(resolvedAddr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid address")
+		return
+	}
+
+	walletKeys := s.wallet.Keys()
+	if spendPub == walletKeys.SpendPubKey && viewPub == walletKeys.ViewPubKey {
+		writeError(w, http.StatusBadRequest, "self-sends are temporarily disabled (key derivation bug would burn funds)")
+		return
+	}
+
+	if req.Amount == 0 {
+		writeError(w, http.StatusBadRequest, "amount must be greater than 0")
+		return
+	}
+
+	// Parse input references from hex txids.
+	refs := make([]wallet.OutputRef, len(req.Inputs))
+	for i, inp := range req.Inputs {
+		if len(inp.TxID) != 64 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("input %d: txid must be 64 hex characters", i))
+			return
+		}
+		txidBytes, err := hex.DecodeString(inp.TxID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("input %d: invalid txid hex", i))
+			return
+		}
+		copy(refs[i].TxID[:], txidBytes)
+		refs[i].OutputIndex = inp.OutputIndex
+	}
+
+	height := s.daemon.Chain().Height()
+
+	// Validate and reserve the specified outputs.
+	lease, inputs, err := s.wallet.ReserveSpecificInputs(refs, height, 2*time.Minute)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Ensure the lease is released on any early-return. Set to false once
+	// ownership transfers to the builder or the tx is successfully submitted.
+	releaseLease := true
+	defer func() {
+		if releaseLease {
+			s.wallet.ReleaseInputLease(lease)
+		}
+	}()
+
+	var inputTotal uint64
+	for _, inp := range inputs {
+		var ok bool
+		inputTotal, ok = wallet.AddU64(inputTotal, inp.Amount)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "input amount sum overflows")
+			return
+		}
+	}
+
+	recipient := wallet.Recipient{
+		SpendPubKey: spendPub,
+		ViewPubKey:  viewPub,
+		Amount:      req.Amount,
+	}
+
+	var memo []byte
+	if req.MemoText != "" && req.MemoHex != "" {
+		writeError(w, http.StatusBadRequest, "provide either memo_text or memo_hex, not both")
+		return
+	}
+	if req.MemoHex != "" {
+		decoded, err := hex.DecodeString(req.MemoHex)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid memo_hex")
+			return
+		}
+		memo = decoded
+	} else if req.MemoText != "" {
+		memo = []byte(req.MemoText)
+	}
+	if len(memo) > wallet.MemoSize-4 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("memo too long: max %d bytes", wallet.MemoSize-4))
+		return
+	}
+	recipient.Memo = memo
+
+	if req.DryRun {
+		outputCount := 2 // recipient + change (conservative)
+		estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
+		fee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+
+		need, ok := wallet.AddU64(req.Amount, fee)
+		if !ok || inputTotal < need {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"insufficient input amount: inputs total %d, need at least %d (amount %d + fee %d)",
+				inputTotal, req.Amount+fee, req.Amount, fee))
+			return
+		}
+
+		change := inputTotal - req.Amount - fee
+		resp := map[string]any{
+			"dry_run":     true,
+			"fee":         fee,
+			"change":      change,
+			"input_total": inputTotal,
+			"input_count": len(inputs),
+		}
+		if resolvedInfo != nil {
+			resp["resolved_handle"] = resolvedInfo.Handle
+			resp["resolved_address"] = resolvedAddr
+			resp["resolver_verified"] = resolvedInfo.Verified
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Builder takes ownership of the lease (releases on build error).
+	releaseLease = false
+	builder := s.createTxBuilder()
+	result, err := builder.TransferWithInputs(inputs, lease, []wallet.Recipient{recipient}, sendFeePerByte)
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
+
+	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
+		s.wallet.ReleaseInputLease(result.InputLease)
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
+
+	for _, spent := range result.SpentOutputs {
+		s.wallet.MarkSpent(spent.OneTimePubKey, height)
+	}
+
+	s.wallet.RecordSend(&wallet.SendRecord{
+		TxID:        result.TxID,
+		Timestamp:   time.Now().Unix(),
+		Recipient:   recipientInput,
+		Amount:      req.Amount,
+		Fee:         result.Fee,
+		BlockHeight: height,
+		Memo:        memo,
+	})
+	if result.Change > 0 {
+		s.wallet.AddPendingCredit(result.TxID, result.Change)
+	}
+	if err := s.wallet.Save(); err != nil {
+		log.Printf("Warning: wallet persistence failed after send %x: %v", result.TxID, err)
+	}
+
+	resp := map[string]any{
+		"txid":        fmt.Sprintf("%x", result.TxID),
+		"fee":         result.Fee,
+		"change":      result.Change,
+		"input_total": inputTotal,
+		"input_count": len(inputs),
+		"dry_run":     false,
 	}
 	if resolvedInfo != nil {
 		resp["resolved_handle"] = resolvedInfo.Handle
@@ -1587,8 +1870,8 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,
-		MinFee:      1000, // 0.00001 BNT minimum
-		FeePerByte:  10,   // 0.0000001 BNT per byte
+		MinFee:      sendMinFee,
+		FeePerByte:  sendFeePerByte,
 	}
 
 	return wallet.NewBuilder(s.wallet, cfg)

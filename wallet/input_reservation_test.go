@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,5 +124,237 @@ func TestInputReservationLease_ExpiresByTTL(t *testing.T) {
 		t.Fatalf("expected reserve to succeed after TTL expiry; lease=%d inputs=%d err=%v", lease3, len(inputs3), err3)
 	}
 	w.ReleaseInputLease(lease3)
+}
+
+func TestReserveSpecificInputs_RejectsDuplicateRefs(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid, OutputIndex: 0, Amount: 100, BlockHeight: 1, Spent: false},
+	}
+
+	refs := []OutputRef{
+		{TxID: txid, OutputIndex: 0},
+		{TxID: txid, OutputIndex: 0},
+	}
+
+	_, _, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for duplicate refs")
+	}
+	if !strings.Contains(err.Error(), "duplicate of input 0") {
+		t.Fatalf("expected duplicate error, got: %v", err)
+	}
+}
+
+func TestReserveSpecificInputs_RejectsSpentOutput(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid, OutputIndex: 0, Amount: 100, BlockHeight: 1, Spent: true},
+	}
+
+	refs := []OutputRef{{TxID: txid, OutputIndex: 0}}
+	_, _, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for spent output")
+	}
+	if !strings.Contains(err.Error(), "already spent") {
+		t.Fatalf("expected spent error, got: %v", err)
+	}
+}
+
+func TestReserveSpecificInputs_RejectsImmatureRegular(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid, OutputIndex: 0, Amount: 100, BlockHeight: 95, IsCoinbase: false, Spent: false},
+	}
+
+	// currentHeight=100, BlockHeight=95 → 5 confirmations, needs SafeConfirmations(10)
+	refs := []OutputRef{{TxID: txid, OutputIndex: 0}}
+	_, _, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for immature output")
+	}
+	if !strings.Contains(err.Error(), "has 5 confirmations, needs 10") {
+		t.Fatalf("expected immature error with confirmation counts, got: %v", err)
+	}
+}
+
+func TestReserveSpecificInputs_RejectsImmatureCoinbase(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid, OutputIndex: 0, Amount: 100, BlockHeight: 50, IsCoinbase: true, Spent: false},
+	}
+
+	// currentHeight=100, BlockHeight=50 → 50 confirmations, needs CoinbaseMaturity(60)
+	refs := []OutputRef{{TxID: txid, OutputIndex: 0}}
+	_, _, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for immature coinbase")
+	}
+	if !strings.Contains(err.Error(), "has 50 confirmations, needs 60") {
+		t.Fatalf("expected immature coinbase error with confirmation counts, got: %v", err)
+	}
+}
+
+func TestReserveSpecificInputs_RejectsAlreadyReserved(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid, OutputIndex: 0, Amount: 100, BlockHeight: 1, Spent: false},
+	}
+
+	// Reserve via ReserveMatureInputs first.
+	lease1, _, err := w.ReserveMatureInputs(100, 50, time.Minute)
+	if err != nil || lease1 == 0 {
+		t.Fatalf("setup: expected ReserveMatureInputs to succeed, got lease=%d err=%v", lease1, err)
+	}
+
+	// ReserveSpecificInputs for the same output should fail.
+	refs := []OutputRef{{TxID: txid, OutputIndex: 0}}
+	_, _, err = w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for already-reserved output")
+	}
+	if !strings.Contains(err.Error(), "reserved by another") {
+		t.Fatalf("expected reserved error, got: %v", err)
+	}
+
+	w.ReleaseInputLease(lease1)
+}
+
+func TestReserveSpecificInputs_RejectsFilteredOutput(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid, OutputIndex: 0, Amount: 100, BlockHeight: 1, Spent: false},
+	}
+
+	// Simulate a mempool key-image filter that rejects this output.
+	w.SetInputFilter(func(out *OwnedOutput) bool {
+		return out.TxID == txid && out.OutputIndex == 0
+	})
+
+	refs := []OutputRef{{TxID: txid, OutputIndex: 0}}
+	_, _, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for filtered output")
+	}
+	if !strings.Contains(err.Error(), "key image already in mempool") {
+		t.Fatalf("expected mempool filter error, got: %v", err)
+	}
+
+	w.SetInputFilter(nil)
+}
+
+func TestReserveSpecificInputs_RejectsNotFound(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid [32]byte
+	txid[0] = 0xDD
+
+	// Wallet has no outputs at all.
+	refs := []OutputRef{{TxID: txid, OutputIndex: 0}}
+	_, _, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for missing output")
+	}
+	if !strings.Contains(err.Error(), "output not found") {
+		t.Fatalf("expected not-found error, got: %v", err)
+	}
+}
+
+func TestReserveSpecificInputs_SuccessReturnsDeepCopies(t *testing.T) {
+	w := &Wallet{
+		inputReservations: make(map[reservedOutpoint]inputReservation),
+	}
+
+	var txid1, txid2 [32]byte
+	txid1[0] = 0xDD
+	txid2[0] = 0xEE
+
+	w.data.Outputs = []*OwnedOutput{
+		{TxID: txid1, OutputIndex: 0, Amount: 100, BlockHeight: 1, Spent: false, Memo: []byte{0x01, 0x02}},
+		{TxID: txid2, OutputIndex: 1, Amount: 200, BlockHeight: 2, Spent: false},
+	}
+
+	refs := []OutputRef{
+		{TxID: txid1, OutputIndex: 0},
+		{TxID: txid2, OutputIndex: 1},
+	}
+
+	lease, inputs, err := w.ReserveSpecificInputs(refs, 100, time.Minute)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if lease == 0 {
+		t.Fatal("expected non-zero lease")
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("expected 2 inputs, got %d", len(inputs))
+	}
+	if inputs[0].Amount != 100 || inputs[1].Amount != 200 {
+		t.Fatalf("unexpected amounts: %d, %d", inputs[0].Amount, inputs[1].Amount)
+	}
+
+	// Verify deep copy: mutating returned inputs must not affect wallet state.
+	inputs[0].Amount = 999
+	inputs[0].Memo[0] = 0xFF
+	if w.data.Outputs[0].Amount != 100 {
+		t.Fatal("returned input is not a deep copy (amount)")
+	}
+	if w.data.Outputs[0].Memo[0] != 0x01 {
+		t.Fatal("returned input is not a deep copy (memo)")
+	}
+
+	// The output should now be reserved — a second call should fail.
+	_, _, err = w.ReserveSpecificInputs(refs[:1], 100, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for already-reserved output after successful reservation")
+	}
+
+	w.ReleaseInputLease(lease)
+
+	// After release, reservation should succeed again.
+	lease2, _, err := w.ReserveSpecificInputs(refs[:1], 100, time.Minute)
+	if err != nil {
+		t.Fatalf("expected success after release, got: %v", err)
+	}
+	w.ReleaseInputLease(lease2)
 }
 

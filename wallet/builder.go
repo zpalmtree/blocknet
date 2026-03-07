@@ -9,10 +9,13 @@ import (
 	"time"
 )
 
-func addU64(a, b uint64) (uint64, bool) {
+// AddU64 returns a + b and true if the result does not overflow uint64.
+func AddU64(a, b uint64) (uint64, bool) {
 	sum, carry := bits.Add64(a, b, 0)
 	return sum, carry == 0
 }
+
+func addU64(a, b uint64) (uint64, bool) { return AddU64(a, b) }
 
 // Recipient represents a transaction recipient
 type Recipient struct {
@@ -192,7 +195,49 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		fee = requiredFee
 	}
 
-	// Calculate total input and final change under the final fee.
+	return b.buildTransaction(inputs, recipients, totalSend, fee, lease)
+}
+
+// TransferWithInputs builds a transaction using caller-specified inputs (coin control).
+// The inputs must already be reserved via ReserveSpecificInputs; the lease is released
+// on build failure.
+func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipients []Recipient, feeRate uint64) (res *TransferResult, retErr error) {
+	defer func() {
+		if retErr != nil && lease != 0 {
+			b.wallet.ReleaseInputLease(lease)
+		}
+	}()
+
+	if len(recipients) == 0 {
+		return nil, errors.New("no recipients specified")
+	}
+	if len(inputs) == 0 {
+		return nil, errors.New("no inputs specified")
+	}
+
+	var totalSend uint64
+	for _, r := range recipients {
+		var ok bool
+		totalSend, ok = addU64(totalSend, r.Amount)
+		if !ok {
+			return nil, errors.New("recipient amount sum overflows uint64")
+		}
+	}
+
+	// With fixed inputs the fee is computed once (no iteration). Assume a
+	// change output for a conservative size estimate; if change ends up zero
+	// the slightly higher fee is simply absorbed.
+	outputCount := len(recipients) + 1
+	estimatedSize := estimateTxSizeBytes(len(inputs), outputCount, b.config.RingSize)
+	fee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
+
+	return b.buildTransaction(inputs, recipients, totalSend, fee, lease)
+}
+
+// buildTransaction is the shared core that constructs outputs, ring signatures,
+// and serializes the transaction. Both Transfer and TransferWithInputs delegate here
+// after input selection and fee computation.
+func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient, totalSend, fee, lease uint64) (*TransferResult, error) {
 	var totalInput uint64
 	for _, inp := range inputs {
 		var ok bool
@@ -210,13 +255,8 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	}
 	change := totalInput - totalSend - fee
 
-	// Build outputs
 	outputs := make([]outputData, 0, len(recipients)+1)
 
-	// Generate a single tx keypair (r, R) shared across all outputs.
-	// Derive r deterministically from wallet secrets + input key images so it
-	// can be re-derived from seed for sender proofs. Falls back to random
-	// if the deterministic callbacks are not configured.
 	txPrivKey, txPubKey, firstOneTimePub, err := b.deriveDeterministicTxKey(
 		inputs, recipients[0].SpendPubKey, recipients[0].ViewPubKey,
 	)
@@ -227,7 +267,6 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	var allBlindings [][32]byte
 
 	for i, r := range recipients {
-		// Derive ECDH shared secret from the single txPriv and recipient's view key
 		sharedSecret, err := b.config.DeriveSharedSecret(txPrivKey, r.ViewPubKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive shared secret for recipient %d: %w", i, err)
@@ -235,10 +274,8 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 
 		var oneTimePub [32]byte
 		if i == 0 {
-			// First recipient already derived via DeriveStealthAddress
 			oneTimePub = firstOneTimePub
 		} else {
-			// Compose from existing primitives: oneTimePub = H(r*V)*G + S
 			sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
 			if err != nil {
 				return nil, fmt.Errorf("failed to derive shared point for recipient %d: %w", i, err)
@@ -249,8 +286,6 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 			}
 		}
 
-		// Derive blinding deterministically from shared secret so the
-		// recipient's scanner can reproduce it for amount decryption.
 		blinding := DeriveBlinding(sharedSecret, i)
 		commitment := b.config.CreateCommitment(r.Amount, blinding)
 		rangeProof, err := b.config.CreateRangeProof(r.Amount, blinding)
@@ -276,18 +311,15 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		allBlindings = append(allBlindings, blinding)
 	}
 
-	// Add change output to self if needed
 	if change > 0 {
 		keys := b.wallet.Keys()
 		outputIndex := len(outputs)
 
-		// Derive shared secret from same txPriv and our own view key
 		changeSecret, err := b.config.DeriveSharedSecret(txPrivKey, keys.ViewPubKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive shared secret for change: %w", err)
 		}
 
-		// Derive one-time key: H(r*V)*G + S
 		sharedPoint, err := b.config.ScalarToPoint(changeSecret)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive shared point for change: %w", err)
@@ -322,37 +354,29 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		allBlindings = append(allBlindings, blinding)
 	}
 
-	// Calculate total output blinding using proper scalar arithmetic
-	// sum(pseudo_blindings) must equal sum(output_blindings)
 	totalOutputBlinding, err := b.sumBlindings(allBlindings)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sum output blindings: %w", err)
 	}
 
-	// Build inputs with ring signatures
 	inputsData := make([]inputData, len(inputs))
 
-	// Distribute blinding across pseudo-outputs so they sum to totalOutputBlinding
 	pseudoBlindings, err := b.distributeBlindings(totalOutputBlinding, len(inputs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to distribute blindings: %w", err)
 	}
 
-	// Build message to sign (tx prefix hash without signatures)
 	txPrefix := serializeTxPrefix(txPubKey, len(inputs), outputs, fee)
 	txPrefixHash := sha3.Sum256(txPrefix)
 
 	for i, inp := range inputs {
-		// Get ring members
 		ringKeys, ringCommitments, secretIndex, err := b.config.SelectRingMembers(inp.OneTimePubKey, inp.Commitment)
 		if err != nil {
 			return nil, fmt.Errorf("failed to select ring members: %w", err)
 		}
 
-		// Create pseudo-output commitment (same amount, different blinding)
 		pseudoCommitment := b.config.CreateCommitment(inp.Amount, pseudoBlindings[i])
 
-		// Sign with tx prefix hash as message
 		sig, keyImage, err := b.config.SignRingCT(
 			ringKeys, ringCommitments,
 			secretIndex,
@@ -373,7 +397,6 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		}
 	}
 
-	// Serialize full transaction
 	txData := serializeTx(txPubKey, inputsData, outputs, fee)
 	txID, err := b.config.ComputeTxID(txData)
 	if err != nil {
@@ -521,6 +544,11 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 		Fee:          fee,
 		Change:       0,
 	}, nil
+}
+
+// EstimateTxSizeBytes returns a conservative byte-size estimate for a transaction.
+func EstimateTxSizeBytes(inputCount, outputCount, ringSize int) int {
+	return estimateTxSizeBytes(inputCount, outputCount, ringSize)
 }
 
 func estimateTxSizeBytes(inputCount, outputCount, ringSize int) int {

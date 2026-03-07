@@ -1000,6 +1000,109 @@ func (w *Wallet) ReserveAllMatureInputs(currentHeight uint64, ttl time.Duration)
 	return lease, inputs, nil
 }
 
+// OutputRef identifies a specific output by transaction ID and index.
+type OutputRef struct {
+	TxID        [32]byte
+	OutputIndex int
+}
+
+// ReserveSpecificInputs validates and reserves caller-specified outputs (coin control).
+// Returns granular errors identifying which output failed and why.
+func (w *Wallet) ReserveSpecificInputs(refs []OutputRef, currentHeight uint64, ttl time.Duration) (lease uint64, inputs []*OwnedOutput, err error) {
+	if len(refs) == 0 {
+		return 0, nil, errors.New("no inputs specified")
+	}
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+
+	now := time.Now()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.inputReservations == nil {
+		w.inputReservations = make(map[reservedOutpoint]inputReservation)
+	}
+
+	for op, res := range w.inputReservations {
+		if now.After(res.expiresAt) {
+			delete(w.inputReservations, op)
+		}
+	}
+
+	type outKey struct {
+		txID   [32]byte
+		outIdx int
+	}
+	byKey := make(map[outKey]*OwnedOutput, len(w.data.Outputs))
+	for _, out := range w.data.Outputs {
+		if out != nil {
+			byKey[outKey{out.TxID, out.OutputIndex}] = out
+		}
+	}
+
+	seen := make(map[outKey]int, len(refs))
+	for i, ref := range refs {
+		k := outKey{ref.TxID, ref.OutputIndex}
+		if prev, dup := seen[k]; dup {
+			return 0, nil, fmt.Errorf("input %d: duplicate of input %d (txid %x, index %d)", i, prev, ref.TxID, ref.OutputIndex)
+		}
+		seen[k] = i
+	}
+
+	selected := make([]*OwnedOutput, 0, len(refs))
+	for i, ref := range refs {
+		out, found := byKey[outKey{ref.TxID, ref.OutputIndex}]
+		if !found {
+			return 0, nil, fmt.Errorf("input %d: output not found (txid %x, index %d)", i, ref.TxID, ref.OutputIndex)
+		}
+		if out.Spent {
+			return 0, nil, fmt.Errorf("input %d: output already spent (txid %x, index %d)", i, ref.TxID, ref.OutputIndex)
+		}
+		if !IsOutputMature(out, currentHeight) {
+			confs := uint64(0)
+			if currentHeight >= out.BlockHeight {
+				confs = currentHeight - out.BlockHeight
+			}
+			needed := uint64(SafeConfirmations)
+			if out.IsCoinbase {
+				needed = CoinbaseMaturity
+			}
+			return 0, nil, fmt.Errorf("input %d: immature, has %d confirmations, needs %d (txid %x, index %d)", i, confs, needed, ref.TxID, ref.OutputIndex)
+		}
+		op := reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex}
+		if _, reserved := w.inputReservations[op]; reserved {
+			return 0, nil, fmt.Errorf("input %d: reserved by another in-flight transaction (txid %x, index %d)", i, ref.TxID, ref.OutputIndex)
+		}
+		if w.inputFilter != nil && w.inputFilter(out) {
+			return 0, nil, fmt.Errorf("input %d: key image already in mempool (txid %x, index %d)", i, ref.TxID, ref.OutputIndex)
+		}
+		selected = append(selected, out)
+	}
+
+	lease = w.nextLease.Add(1)
+	expires := now.Add(ttl)
+
+	for _, out := range selected {
+		op := reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex}
+		w.inputReservations[op] = inputReservation{lease: lease, expiresAt: expires}
+	}
+
+	inputs = make([]*OwnedOutput, 0, len(selected))
+	for _, out := range selected {
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		inputs = append(inputs, &c)
+	}
+
+	return lease, inputs, nil
+}
+
 // SetInputFilter installs a predicate that is checked during input selection.
 // If fn returns true for an output, that output is skipped. Pass nil to clear.
 func (w *Wallet) SetInputFilter(fn func(*OwnedOutput) bool) {

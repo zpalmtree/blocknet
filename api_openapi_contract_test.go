@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,6 +232,274 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	}
 	if !foundIdem {
 		t.Fatal("/api/wallet/send post missing Idempotency-Key parameter")
+	}
+}
+
+func TestOpenAPISendAdvancedContractParity(t *testing.T) {
+	// --- Handler-side behavior ---
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	chain.mu.Lock()
+	chain.height = 100
+	chain.mu.Unlock()
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	walletFile := filepath.Join(t.TempDir(), "wallet.dat")
+	w, err := wallet.NewWallet(walletFile, []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create wallet: %v", err)
+	}
+
+	// Give the wallet a mature output so ReserveSpecificInputs can find it.
+	var knownTxID [32]byte
+	knownTxID[0] = 0xAA
+	w.AddOutput(&wallet.OwnedOutput{
+		TxID:        knownTxID,
+		OutputIndex: 0,
+		Amount:      10_000_000,
+		BlockHeight: 1,
+		IsCoinbase:  false,
+		Spent:       false,
+	})
+
+	// Second wallet for a valid non-self recipient address.
+	recipientFile := filepath.Join(t.TempDir(), "recipient.dat")
+	recipientWallet, err := wallet.NewWallet(recipientFile, []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create recipient wallet: %v", err)
+	}
+	recipientAddr := recipientWallet.Address()
+
+	api := NewAPIServer(daemon, w, nil, t.TempDir(), []byte("pw"))
+	mux := http.NewServeMux()
+	api.registerPublicRoutes(mux)
+	api.registerPrivateRoutes(mux)
+
+	token := "test-token"
+	var handler http.Handler = mux
+	handler = authMiddleware(token, handler)
+	handler = maxBodySize(handler, maxRequestBodyBytes)
+
+	authz := map[string]string{
+		"Authorization": "Bearer " + token,
+		"Content-Type":  "application/json",
+	}
+
+	doReq := func(body []byte, remoteAddr string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/api/wallet/send/advanced", bytes.NewReader(body))
+		req.RemoteAddr = remoteAddr
+		for k, v := range authz {
+			req.Header.Set(k, v)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	knownTxIDHex := fmt.Sprintf("%x", knownTxID)
+
+	// Missing inputs array must fail.
+	{
+		body := []byte(`{"address":"` + recipientAddr + `","amount":1}`)
+		rr := doReq(body, "198.51.100.20:1234")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for missing inputs, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "inputs array is required") {
+			t.Fatalf("unexpected error for missing inputs: %s", rr.Body.String())
+		}
+	}
+
+	// Empty inputs array must fail.
+	{
+		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"inputs":[]}`)
+		rr := doReq(body, "198.51.100.21:1234")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for empty inputs, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "inputs array is required") {
+			t.Fatalf("unexpected error for empty inputs: %s", rr.Body.String())
+		}
+	}
+
+	// Bad txid length must fail.
+	{
+		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"inputs":[{"txid":"abcd","output_index":0}]}`)
+		rr := doReq(body, "198.51.100.22:1234")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for bad txid, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "txid must be 64 hex") {
+			t.Fatalf("unexpected error for bad txid: %s", rr.Body.String())
+		}
+	}
+
+	// Memo mutual exclusion must fail.
+	{
+		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"memo_text":"hi","memo_hex":"00","inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
+		rr := doReq(body, "198.51.100.23:1234")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for memo mutual exclusion, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "provide either memo_text or memo_hex") {
+			t.Fatalf("unexpected error for memo exclusion: %s", rr.Body.String())
+		}
+	}
+
+	// Memo too long must fail.
+	{
+		long := strings.Repeat("a", wallet.MemoSize-3)
+		body := []byte(`{"address":"` + recipientAddr + `","amount":1,"memo_text":"` + long + `","inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
+		rr := doReq(body, "198.51.100.24:1234")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for memo too long, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "memo too long") {
+			t.Fatalf("unexpected error for memo length: %s", rr.Body.String())
+		}
+	}
+
+	// Dry run with valid inputs must return 200 with fee/change/input_total.
+	{
+		body := []byte(`{"address":"` + recipientAddr + `","amount":1000,"dry_run":true,"inputs":[{"txid":"` + knownTxIDHex + `","output_index":0}]}`)
+		rr := doReq(body, "198.51.100.25:1234")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for dry run, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got map[string]interface{}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("failed to decode dry run response: %v", err)
+		}
+		if dryRun, ok := got["dry_run"].(bool); !ok || !dryRun {
+			t.Fatalf("expected dry_run=true, got %#v", got["dry_run"])
+		}
+		for _, required := range []string{"fee", "change", "input_total", "input_count"} {
+			if _, ok := got[required]; !ok {
+				t.Fatalf("dry run response missing %q", required)
+			}
+		}
+		if _, ok := got["txid"]; ok {
+			t.Fatal("dry run response should not include txid")
+		}
+		if total, ok := got["input_total"].(float64); !ok || int(total) != 10_000_000 {
+			t.Fatalf("expected input_total=10000000, got %#v", got["input_total"])
+		}
+	}
+
+	// --- OpenAPI-side contract ---
+	specBytes, err := os.ReadFile("api_openapi.json")
+	if err != nil {
+		t.Fatalf("failed to read api_openapi.json: %v", err)
+	}
+	var spec map[string]interface{}
+	if err := json.Unmarshal(specBytes, &spec); err != nil {
+		t.Fatalf("failed to parse api_openapi.json: %v", err)
+	}
+
+	components := mustGetMap(t, spec, "components")
+	allSchemas := mustGetMap(t, components, "schemas")
+
+	// --- SendAdvancedRequest schema ---
+	advReq := mustGetMap(t, allSchemas, "SendAdvancedRequest")
+	advProps := mustGetMap(t, advReq, "properties")
+
+	for _, field := range []string{"address", "amount", "inputs", "memo_text", "memo_hex", "dry_run"} {
+		if _, ok := advProps[field]; !ok {
+			t.Fatalf("SendAdvancedRequest missing %q in OpenAPI", field)
+		}
+	}
+
+	// oneOf memo exclusivity constraint must be present.
+	if _, ok := advReq["oneOf"]; !ok {
+		t.Fatal("SendAdvancedRequest missing oneOf mutual-exclusion constraint in OpenAPI")
+	}
+
+	// memo_text maxLength must match handler limit.
+	memoText := mustGetMap(t, advProps, "memo_text")
+	if got, ok := memoText["maxLength"].(float64); !ok || int(got) != 124 {
+		t.Fatalf("SendAdvancedRequest.memo_text maxLength mismatch: got %#v want 124", memoText["maxLength"])
+	}
+
+	// memo_hex must have pattern and maxLength.
+	memoHex := mustGetMap(t, advProps, "memo_hex")
+	if got, ok := memoHex["maxLength"].(float64); !ok || int(got) != 248 {
+		t.Fatalf("SendAdvancedRequest.memo_hex maxLength mismatch: got %#v want 248", memoHex["maxLength"])
+	}
+	if pat, ok := memoHex["pattern"].(string); !ok || !strings.Contains(pat, "{2}") {
+		t.Fatalf("SendAdvancedRequest.memo_hex pattern missing even-length constraint: got %#v", memoHex["pattern"])
+	}
+
+	// inputs must have minItems and maxItems.
+	inputsProp := mustGetMap(t, advProps, "inputs")
+	if got, ok := inputsProp["minItems"].(float64); !ok || int(got) != 1 {
+		t.Fatalf("inputs.minItems mismatch: got %#v want 1", inputsProp["minItems"])
+	}
+	if got, ok := inputsProp["maxItems"].(float64); !ok || int(got) != 256 {
+		t.Fatalf("inputs.maxItems mismatch: got %#v want 256", inputsProp["maxItems"])
+	}
+
+	// --- SendAdvancedResponse schema ---
+	advResp := mustGetMap(t, allSchemas, "SendAdvancedResponse")
+	respProps := mustGetMap(t, advResp, "properties")
+
+	for _, field := range []string{"txid", "fee", "change", "input_total", "input_count", "dry_run", "memo_hex"} {
+		if _, ok := respProps[field]; !ok {
+			t.Fatalf("SendAdvancedResponse missing %q in OpenAPI", field)
+		}
+	}
+
+	// Response memo_hex must have pattern and maxLength (match SendResponse).
+	respMemoHex := mustGetMap(t, respProps, "memo_hex")
+	if got, ok := respMemoHex["maxLength"].(float64); !ok || int(got) != 248 {
+		t.Fatalf("SendAdvancedResponse.memo_hex maxLength mismatch: got %#v want 248", respMemoHex["maxLength"])
+	}
+	if pat, ok := respMemoHex["pattern"].(string); !ok || !strings.Contains(pat, "{2}") {
+		t.Fatalf("SendAdvancedResponse.memo_hex pattern missing even-length constraint: got %#v", respMemoHex["pattern"])
+	}
+
+	// --- Endpoint path ---
+	paths := mustGetMap(t, spec, "paths")
+	advPath := mustGetMap(t, paths, "/api/wallet/send/advanced")
+	advPost := mustGetMap(t, advPath, "post")
+
+	// Must document Idempotency-Key header.
+	rawParams, ok := advPost["parameters"]
+	if !ok {
+		t.Fatal("/api/wallet/send/advanced missing parameters")
+	}
+	params, ok := rawParams.([]interface{})
+	if !ok {
+		t.Fatal("/api/wallet/send/advanced parameters is not an array")
+	}
+	foundIdem := false
+	for _, p := range params {
+		pm, ok := p.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := pm["name"].(string); strings.EqualFold(name, "Idempotency-Key") {
+			foundIdem = true
+			break
+		}
+	}
+	if !foundIdem {
+		t.Fatal("/api/wallet/send/advanced missing Idempotency-Key parameter")
+	}
+
+	// Must document 429 response.
+	responses := mustGetMap(t, advPost, "responses")
+	if _, ok := responses["429"]; !ok {
+		t.Fatal("/api/wallet/send/advanced missing 429 response in OpenAPI")
+	}
+
+	// Must document 409 response.
+	if _, ok := responses["409"]; !ok {
+		t.Fatal("/api/wallet/send/advanced missing 409 response in OpenAPI")
 	}
 }
 
