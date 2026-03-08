@@ -1,0 +1,28 @@
+# Binary
+blocknet
+bnt
+*.exe
+
+# Build
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+vendor/
+
+# bnt runtime
+config.json
+*.log
+blocknet-data-mainnet
+blocknet-data-testnet
+notes
